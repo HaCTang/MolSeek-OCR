@@ -47,6 +47,7 @@ class BenchmarkConfig:
 class EvalConfig:
     pretrained_weight_path: str
     weight_root: str
+    full_or_lora: str
     checkpoint_step: int | None
     checkpoint_name: str | None
     checkpoint_path: str | None
@@ -107,7 +108,12 @@ def load_eval_config(config_path: str) -> EvalConfig:
 
     raw["pretrained_weight_path"] = _resolve_path(raw["pretrained_weight_path"], config_file.parent)
     raw["weight_root"] = _resolve_path(raw.get("weight_root", "./weight"), config_file.parent)
-    raw["output_dir"] = _resolve_path(raw.get("output_dir", "./evaluation_outputs"), config_file.parent)
+    raw["full_or_lora"] = str(raw.get("full_or_lora", "lora")).strip().lower()
+    raw["output_dir"] = _resolve_path(
+        raw.get("output_dir", raw.get("output_dir_path", "./evaluation_outputs")),
+        config_file.parent,
+    )
+    raw.pop("output_dir_path", None)
     raw["checkpoint_path"] = raw.get("checkpoint_path", None)
     if raw["checkpoint_path"] not in (None, ""):
         raw["checkpoint_path"] = _resolve_path(raw["checkpoint_path"], config_file.parent)
@@ -198,6 +204,8 @@ def validate_eval_config(cfg: EvalConfig) -> None:
             raise ValueError(f"gpu_ids contains duplicates: {cfg.gpu_ids}")
     if cfg.backend not in ("transformers", "vllm"):
         raise ValueError(f"backend must be 'transformers' or 'vllm', got '{cfg.backend}'")
+    if cfg.full_or_lora not in ("full", "lora"):
+        raise ValueError(f"full_or_lora must be 'full' or 'lora', got '{cfg.full_or_lora}'")
     if cfg.backend == "vllm":
         if not cfg.vllm_code_dir or not os.path.isdir(cfg.vllm_code_dir):
             raise ValueError(f"vllm_code_dir is required and must exist for vllm backend: {cfg.vllm_code_dir}")
@@ -442,28 +450,37 @@ def _save_benchmark_results(
 # Transformers backend
 # ---------------------------------------------------------------------------
 
-def load_model_and_tokenizer(pretrained_weight_path: str, checkpoint_path: str):
+def load_model_and_tokenizer(pretrained_weight_path: str, checkpoint_path: str, full_or_lora: str):
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for DeepSeek-OCR2 evaluation.")
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     apply_transformers_compat_shims()
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint_path, trust_remote_code=True)
+    tokenizer_source = checkpoint_path
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=True)
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model_path = resolve_local_model_path(Path(pretrained_weight_path).resolve())
-    base_model = AutoModel.from_pretrained(
-        str(model_path),
-        trust_remote_code=True,
-        attn_implementation="flash_attention_2",
-        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
-    )
-    peft_model = PeftModel.from_pretrained(base_model, checkpoint_path)
-    if hasattr(peft_model, "merge_and_unload"):
-        model = peft_model.merge_and_unload()
+    if full_or_lora == "full":
+        model = AutoModel.from_pretrained(
+            str(Path(checkpoint_path).resolve()),
+            trust_remote_code=True,
+            attn_implementation="flash_attention_2",
+            torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+        )
     else:
-        model = peft_model
+        model_path = resolve_local_model_path(Path(pretrained_weight_path).resolve())
+        base_model = AutoModel.from_pretrained(
+            str(model_path),
+            trust_remote_code=True,
+            attn_implementation="flash_attention_2",
+            torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+        )
+        peft_model = PeftModel.from_pretrained(base_model, checkpoint_path)
+        if hasattr(peft_model, "merge_and_unload"):
+            model = peft_model.merge_and_unload()
+        else:
+            model = peft_model
     model = model.eval().cuda()
     return model, tokenizer
 
@@ -515,42 +532,57 @@ def run_benchmark_transformers(
 # vLLM backend
 # ---------------------------------------------------------------------------
 
-def _merge_and_save_model(pretrained_weight_path: str, checkpoint_path: str, merged_model_dir: str) -> str:
+def _merge_and_save_model(
+    pretrained_weight_path: str,
+    checkpoint_path: str,
+    merged_model_dir: str,
+    full_or_lora: str,
+) -> str:
     checkpoint_name = Path(checkpoint_path).name
-    merged_dir = Path(merged_model_dir) / checkpoint_name
+    merged_dir = Path(merged_model_dir) / f"{full_or_lora}_{checkpoint_name}"
     marker_file = merged_dir / ".merge_complete"
 
     if marker_file.is_file():
         print(f"Using cached merged model: {merged_dir}")
         return str(merged_dir)
 
-    print(f"Merging LoRA weights from {checkpoint_path} into base model...")
+    if full_or_lora == "lora":
+        print(f"Merging LoRA weights from {checkpoint_path} into base model...")
+    else:
+        print(f"Preparing full-finetuned model for vLLM from {checkpoint_path}...")
     apply_transformers_compat_shims()
+    if full_or_lora == "lora":
+        model_path = resolve_local_model_path(Path(pretrained_weight_path).resolve())
+        tokenizer = AutoTokenizer.from_pretrained(str(model_path), trust_remote_code=True)
+        if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+            tokenizer.pad_token = tokenizer.eos_token
 
-    model_path = resolve_local_model_path(Path(pretrained_weight_path).resolve())
-    tokenizer = AutoTokenizer.from_pretrained(str(model_path), trust_remote_code=True)
-    if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
-        tokenizer.pad_token = tokenizer.eos_token
+        # Load on CPU with bfloat16; avoid torch.cuda.is_bf16_supported() which
+        # initialises CUDA and prevents later multiprocessing with 'spawn'.
+        base_model = AutoModel.from_pretrained(
+            str(model_path),
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        )
+        peft_model = PeftModel.from_pretrained(base_model, checkpoint_path)
+        merged_model = peft_model.merge_and_unload()
 
-    # Load on CPU with bfloat16; avoid torch.cuda.is_bf16_supported() which
-    # initialises CUDA and prevents later multiprocessing with 'spawn'.
-    base_model = AutoModel.from_pretrained(
-        str(model_path),
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
-    )
-    peft_model = PeftModel.from_pretrained(base_model, checkpoint_path)
-    merged_model = peft_model.merge_and_unload()
+        merged_dir.mkdir(parents=True, exist_ok=True)
+        merged_model.save_pretrained(str(merged_dir), safe_serialization=True)
+        tokenizer.save_pretrained(str(merged_dir))
 
-    merged_dir.mkdir(parents=True, exist_ok=True)
-    merged_model.save_pretrained(str(merged_dir), safe_serialization=True)
-    tokenizer.save_pretrained(str(merged_dir))
-
-    # Copy extra json config files from the base model (but NOT .py files)
-    for src_file in model_path.glob("*.json"):
-        dest = merged_dir / src_file.name
-        if not dest.exists():
-            shutil.copy2(str(src_file), str(dest))
+        # Copy extra json config files from the base model (but NOT .py files)
+        for src_file in model_path.glob("*.json"):
+            dest = merged_dir / src_file.name
+            if not dest.exists():
+                shutil.copy2(str(src_file), str(dest))
+    else:
+        source_dir = Path(checkpoint_path).resolve()
+        if not source_dir.is_dir():
+            raise FileNotFoundError(f"Full checkpoint directory not found: {source_dir}")
+        if merged_dir.exists():
+            shutil.rmtree(merged_dir)
+        shutil.copytree(source_dir, merged_dir)
 
     # Patch config.json so vLLM uses its built-in DeepseekVLV2Config
     # instead of the HF custom DeepseekOCR2Config (which lacks text_config).
@@ -569,8 +601,9 @@ def _merge_and_save_model(pretrained_weight_path: str, checkpoint_path: str, mer
     marker_file.touch()
     print(f"Saved merged model to: {merged_dir}")
 
-    del merged_model, peft_model, base_model
-    torch.cuda.empty_cache()
+    if full_or_lora == "lora":
+        del merged_model, peft_model, base_model
+        torch.cuda.empty_cache()
 
     return str(merged_dir)
 
@@ -731,7 +764,11 @@ def _transformers_gpu_worker(
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     torch.cuda.set_device(0)
 
-    model, tokenizer = load_model_and_tokenizer(cfg.pretrained_weight_path, checkpoint_path)
+    model, tokenizer = load_model_and_tokenizer(
+        cfg.pretrained_weight_path,
+        checkpoint_path,
+        cfg.full_or_lora,
+    )
 
     gpu_scores: dict[str, Any] = {}
     for bench in benchmarks:
@@ -768,7 +805,7 @@ def _run_multi_gpu(
     merged_model_path: str | None = None
     if cfg.backend == "vllm":
         merged_model_path = _merge_and_save_model(
-            cfg.pretrained_weight_path, checkpoint_path, cfg.merged_model_dir
+                cfg.pretrained_weight_path, checkpoint_path, cfg.merged_model_dir, cfg.full_or_lora
         )
         processes = []
         script_path = str(Path(__file__).resolve())
@@ -794,6 +831,8 @@ def _run_multi_gpu(
                 "--gpu_ids",
                 "0",
             ]
+            if cfg.output_dir:
+                cmd.extend(["--output_dir", cfg.output_dir])
             env = os.environ.copy()
             env["CUDA_VISIBLE_DEVICES"] = str(physical_gpu_id)
             env["VLLM_USE_V1"] = "0"
@@ -891,6 +930,10 @@ def parse_args() -> argparse.Namespace:
         "--gpu_ids", type=str, default=None,
         help="Comma-separated physical GPU ids for data parallelism, e.g. 1,3.",
     )
+    parser.add_argument(
+        "--output_dir", type=str, default=None,
+        help="Override output directory from config.",
+    )
     return parser.parse_args()
 
 
@@ -923,6 +966,8 @@ def main() -> None:
     cfg = load_eval_config(args.config)
     if args.backend:
         cfg.backend = args.backend
+    if args.output_dir:
+        cfg.output_dir = str(Path(args.output_dir).resolve())
     if args.num_gpus is not None:
         cfg.num_gpus = args.num_gpus
     if args.gpu_ids:
@@ -933,6 +978,7 @@ def main() -> None:
     selected_benchmarks = select_benchmarks(cfg, args.benchmarks)
 
     print(f"Backend: {cfg.backend}")
+    print(f"Mode: {cfg.full_or_lora}")
     print(f"Using checkpoint: {checkpoint_path}")
     if cfg.gpu_ids:
         print(f"GPU ids: {cfg.gpu_ids}")
@@ -949,7 +995,7 @@ def main() -> None:
     elif cfg.backend == "vllm":
         # --- single-GPU vLLM path ---
         merged_model_path = _merge_and_save_model(
-            cfg.pretrained_weight_path, checkpoint_path, cfg.merged_model_dir
+            cfg.pretrained_weight_path, checkpoint_path, cfg.merged_model_dir, cfg.full_or_lora
         )
         instruction = selected_benchmarks[0].instruction
         _setup_vllm_env(cfg, instruction, merged_model_path)
@@ -963,7 +1009,7 @@ def main() -> None:
 
     else:
         # --- single-GPU transformers path ---
-        model, tokenizer = load_model_and_tokenizer(cfg.pretrained_weight_path, checkpoint_path)
+        model, tokenizer = load_model_and_tokenizer(cfg.pretrained_weight_path, checkpoint_path, cfg.full_or_lora)
 
         for bench in selected_benchmarks:
             print(f"\n=== Running benchmark: {bench.name} ===")
