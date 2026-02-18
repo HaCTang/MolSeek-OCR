@@ -1,6 +1,6 @@
-#ChemSeek-OCR
+# ChemSeek-OCR
 
-##Downloading Source Code##
+## Downloading Source Code##
 
 ```bash
 mkdir llm4chem
@@ -9,7 +9,7 @@ git clone https://github.com/deepseek-ai/DeepSeek-OCR-2.git
 git clone https://github.com/HaCTang/ChemSeek-OCR.git
 ```
 
-##Environment Setting##
+## Environment Setting##
 First build a conda environment following https://github.com/deepseek-ai/DeepSeek-OCR-2.
 
 ```bash
