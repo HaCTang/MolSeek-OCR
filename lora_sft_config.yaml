@@ -1,0 +1,176 @@
+pretrained_weight_path: ../DeepSeek-OCR-2
+train_sets:
+  # pre_rendered mode example (uses pre-rendered images)
+  - train_csv: ./training_data/pubchem/train_200k.csv
+    data_mode: pre_rendered # dynamic / pre_rendered / realistic
+    pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: 64000 # null or the number of samples to use
+
+  - train_csv: ./training_data/pubchem/train_200k.csv
+    data_mode: pre_rendered # dynamic / pre_rendered / realistic
+    pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: 64000 # null or the number of samples to use
+
+  - train_csv: ./training_data/uspto_mol/train_200k.csv
+    data_mode: realistic
+    realistic_image_root: ./training_data
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: 64000
+
+  # dynamic mode example (keeps style/molecule augmentation controls)
+  # - train_csv: ./training_data/pubchem/train_200k.csv
+  #   data_mode: dynamic
+  #   pre_rendered_image_dir: null
+  #   realistic_image_root: null
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   style: molscribe_default
+  #   mol_augment: true
+  #   include_condensed: False
+  #   max_samples: null
+  #   sample_num: null
+
+  # realistic mode example (reads image path from CSV column `file_path`)
+  # - train_csv: ./training_data/uspto_mol/train_200k.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./training_data
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+
+enable_val_sets: false
+eval_every_steps: 1500 # only intermediate steps (not step0/final)
+eval_on_start: false
+eval_on_end: true
+val_sets:
+  - name: CLEF_p
+    val_csv: ./benchmark/perturb/CLEF_p.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: staker_p
+    val_csv: ./benchmark/perturb/staker_p.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: UOB_p
+    val_csv: ./benchmark/perturb/UOB_p.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: USPTO_p
+    val_csv: ./benchmark/perturb/USPTO_p.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: acs
+    val_csv: ./benchmark/real/acs.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: CLEF
+    val_csv: ./benchmark/real/CLEF.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: staker
+    val_csv: ./benchmark/real/staker.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: UOB
+    val_csv: ./benchmark/real/UOB.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: USPTO
+    val_csv: ./benchmark/real/USPTO.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: chemdraw
+    val_csv: ./benchmark/synthetic/chemdraw.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: indigo
+    val_csv: ./benchmark/synthetic/indigo.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+seed: 3407
+batch_size: 4
+grad_accum: 8
+learning_rate: 0.0002
+weight_decay: 0.001
+warmup_steps: 100
+max_steps: 1500
+epochs: 0.0
+save_steps: 50
+optim: adamw_torch_fused
+allow_tf32: true
+enable_gradient_checkpointing: true
+dataloader_num_workers: 8
+dataloader_prefetch_factor: 2
+dataloader_persistent_workers: false
+image_size: 768
+base_size: 1024
+crop_mode: true
+load_in_4bit: false
+attn_implementation: flash_attention_2
+output_dir: ./weight_lora_sft
+lora_r: 64
+lora_alpha: 64
+lora_dropout: 0.1
+target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+  - projector.layers
+  - qkv 
+  - proj
+  - lin1
+  - lin2
+ddp_find_unused_parameters: true
+ddp_backend: nccl
+ddp_timeout_seconds: 1800
+use_accelerate: true
+accelerate_num_processes: 4
+accelerate_gpu_ids: "0,1,2,3"
+train_on_responses_only: true
+restart:
+  enable: false
+  dir: ./weight
+  auto_resume_from_latest_checkpoint: true
+  resume_from_checkpoint: null
+  wandb_resume_same_run: true
+wandb: true
+wandb_project: ChemSeek-OCR
+wandb_run_name: test4
+wandb_api_key: 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

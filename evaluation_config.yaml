@@ -1,0 +1,132 @@
+pretrained_weight_path: ../DeepSeek-OCR-2/hf_cache/models--deepseek-ai--DeepSeek-OCR-2/snapshots/aaa02f3811945a91062062994c5c4a3f4c0af2b0
+weight_root: ./weight
+
+# Choose one of:
+# 1) checkpoint_path (highest priority), e.g. ./weight/checkpoint-1500
+# 2) checkpoint_step, resolved to <weight_root>/checkpoint-<step>
+# 3) checkpoint_name, e.g. checkpoint-1500
+# 4) if all null, auto use latest checkpoint-* under weight_root
+checkpoint_path: null
+checkpoint_step: 1500
+checkpoint_name: null
+
+output_dir: ./evaluation_outputs
+image_size: 768
+base_size: 1024
+crop_mode: true
+num_workers: 16
+tanimoto: false
+
+# --- Backend: "transformers" (default, sequential) or "vllm" (batch, faster) ---
+# backend: transformers
+backend: vllm
+
+# --- vLLM-specific options (only used when backend=vllm) ---
+# Path to the DeepSeek-OCR2-vllm code directory (contains deepseek_ocr2.py, process/, deepencoderv2/)
+vllm_code_dir: ../DeepSeek-OCR-2/DeepSeek-OCR2-master/DeepSeek-OCR2-vllm
+# Directory to cache merged LoRA+base model weights (one subdirectory per checkpoint)
+merged_model_dir: ./merged_models
+vllm_gpu_memory_utilization: 0.8
+vllm_max_model_len: 8192
+vllm_tensor_parallel_size: 1
+
+# --- Multi-GPU data parallelism ---
+# Each GPU runs an independent model instance, processing different benchmarks in parallel.
+# Set to 1 for single-GPU. Set to N to use GPU 0..N-1 simultaneously.
+num_gpus: 2
+# Optional explicit physical GPU ids. If set, overrides num_gpus.
+# Example: [1, 3]
+gpu_ids: [0, 1]
+
+
+# null means run all enabled benchmarks.
+selected_benchmarks: null
+
+benchmarks:
+  # - name: CLEF_p
+  #   val_csv: ./benchmark/perturb/CLEF_p.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
+
+  # - name: staker_p
+  #   val_csv: ./benchmark/perturb/staker_p.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
+
+  # - name: UOB_p
+  #   val_csv: ./benchmark/perturb/UOB_p.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
+
+  # - name: USPTO_p
+  #   val_csv: ./benchmark/perturb/USPTO_p.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
+
+  - name: acs
+    val_csv: ./benchmark/real/acs.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+    enabled: true
+
+  # - name: CLEF
+  #   val_csv: ./benchmark/real/CLEF.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
+
+  # - name: staker
+  #   val_csv: ./benchmark/real/staker.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
+
+  # - name: UOB
+  #   val_csv: ./benchmark/real/UOB.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
+
+  - name: USPTO
+    val_csv: ./benchmark/real/USPTO.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+    enabled: true
+
+  # - name: chemdraw
+  #   val_csv: ./benchmark/synthetic/chemdraw.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
+
+  # - name: indigo
+  #   val_csv: ./benchmark/synthetic/indigo.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true

@@ -1,0 +1,140 @@
+pretrained_weight_path: ../DeepSeek-OCR-2
+train_sets:
+  - train_csv: ./training_data/pubchem/train_200k.csv
+    data_mode: pre_rendered # dynamic / pre_rendered / realistic
+    pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: 6400
+
+  # - train_csv: ./training_data/pubchem/train_200k.csv
+  #   data_mode: pre_rendered
+  #   pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: 64000
+
+  # - train_csv: ./training_data/uspto_mol/train_200k.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./training_data
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: 64000
+
+enable_val_sets: False
+eval_every_steps: 1500
+eval_on_start: false
+eval_on_end: true
+val_sets:
+  - name: CLEF_p
+    val_csv: ./benchmark/perturb/CLEF_p.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: staker_p
+    val_csv: ./benchmark/perturb/staker_p.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: UOB_p
+    val_csv: ./benchmark/perturb/UOB_p.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: USPTO_p
+    val_csv: ./benchmark/perturb/USPTO_p.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: acs
+    val_csv: ./benchmark/real/acs.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: CLEF
+    val_csv: ./benchmark/real/CLEF.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: staker
+    val_csv: ./benchmark/real/staker.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: UOB
+    val_csv: ./benchmark/real/UOB.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: USPTO
+    val_csv: ./benchmark/real/USPTO.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: chemdraw
+    val_csv: ./benchmark/synthetic/chemdraw.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+  - name: indigo
+    val_csv: ./benchmark/synthetic/indigo.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+
+seed: 3407
+batch_size: 4
+grad_accum: 8
+learning_rate: 0.00002
+weight_decay: 0.001
+warmup_steps: 10
+max_steps: 50
+epochs: 0.0
+save_steps: 50
+optim: adamw_torch_fused
+allow_tf32: true
+enable_gradient_checkpointing: true
+dataloader_num_workers: 8
+dataloader_prefetch_factor: 2
+dataloader_persistent_workers: false
+image_size: 768
+base_size: 1024
+crop_mode: true
+load_in_4bit: false
+attn_implementation: flash_attention_2
+output_dir: ./weight_full_sft
+ddp_find_unused_parameters: false
+ddp_backend: nccl
+ddp_timeout_seconds: 1800
+use_accelerate: true
+accelerate_num_processes: 4
+accelerate_gpu_ids: "0,1,2,3"
+train_on_responses_only: true
+restart:
+  enable: true
+  dir: ./weight_full_sft
+  auto_resume_from_latest_checkpoint: true
+  resume_from_checkpoint: null
+  wandb_resume_same_run: true
+wandb: true
+wandb_project: ChemSeek-OCR
+wandb_run_name: fullsft-test
+wandb_api_key: null
