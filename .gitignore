@@ -10,6 +10,7 @@ wandb/
 weight/
 weight_lora_sft/
 weight_full_sft/
+github.txt
 *.zip
 *.pt
 *.pth
