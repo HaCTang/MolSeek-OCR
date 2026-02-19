@@ -11,18 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
-import rdkit
 import torch
-from SmilesPE.pretokenizer import atomwise_tokenizer
 from peft import PeftModel
-from rdkit import Chem, DataStructs
 from transformers import AutoModel, AutoTokenizer
 
 from DeepSeek_OCR_2 import apply_transformers_compat_shims, resolve_local_model_path
-
-rdkit.RDLogger.DisableLog("rdApp.*")
+from calc_accuracy import SmilesEvaluator
 
 SMILES_CANDIDATE_COLUMNS = ("SMILES", "smiles", "canonical_smiles")
 
@@ -231,109 +226,6 @@ def validate_eval_config(cfg: EvalConfig) -> None:
                 raise ValueError(
                     f"benchmarks[{i}].pre_rendered_image_dir not found: {bench.pre_rendered_image_dir}"
                 )
-
-
-# ---------------------------------------------------------------------------
-# SMILES evaluation (shared by both backends)
-# ---------------------------------------------------------------------------
-
-def canonicalize_smiles(smiles, ignore_chiral=False, ignore_cistrans=False, replace_rgroup=True):
-    if type(smiles) is not str or smiles == "":
-        return "", False
-    if ignore_cistrans:
-        smiles = smiles.replace("/", "").replace("\\", "")
-    if replace_rgroup:
-        tokens = atomwise_tokenizer(smiles)
-        for j, token in enumerate(tokens):
-            if token[0] == "[" and token[-1] == "]":
-                symbol = token[1:-1]
-                if symbol[0] == "R" and symbol[1:].isdigit():
-                    tokens[j] = f"[{symbol[1:]}*]"
-                elif Chem.AtomFromSmiles(token) is None:
-                    tokens[j] = "*"
-        smiles = "".join(tokens)
-    try:
-        canon_smiles = Chem.CanonSmiles(smiles, useChiral=(not ignore_chiral))
-        success = True
-    except Exception:
-        canon_smiles = smiles
-        success = False
-    return canon_smiles, success
-
-
-def convert_smiles_to_canonsmiles(
-    smiles_list, ignore_chiral=False, ignore_cistrans=False, replace_rgroup=True, num_workers=16
-):
-    with multiprocessing.Pool(num_workers) as pool:
-        results = pool.starmap(
-            canonicalize_smiles,
-            [(smiles, ignore_chiral, ignore_cistrans, replace_rgroup) for smiles in smiles_list],
-            chunksize=128,
-        )
-    canon_smiles, success = zip(*results)
-    return list(canon_smiles), float(np.mean(success))
-
-
-def tanimoto_similarity(smiles1, smiles2):
-    try:
-        mol1 = Chem.MolFromSmiles(smiles1)
-        mol2 = Chem.MolFromSmiles(smiles2)
-        fp1 = Chem.RDKFingerprint(mol1)
-        fp2 = Chem.RDKFingerprint(mol2)
-        return float(DataStructs.FingerprintSimilarity(fp1, fp2))
-    except Exception:
-        return 0.0
-
-
-def compute_tanimoto_similarities(gold_smiles, pred_smiles, num_workers=16):
-    with multiprocessing.Pool(num_workers) as pool:
-        similarities = pool.starmap(
-            tanimoto_similarity,
-            [(gs, ps) for gs, ps in zip(gold_smiles, pred_smiles)],
-        )
-    return similarities
-
-
-class SmilesEvaluator:
-    def __init__(self, gold_smiles, num_workers=16, tanimoto=False):
-        self.gold_smiles = gold_smiles
-        self.num_workers = num_workers
-        self.tanimoto = tanimoto
-        self.gold_smiles_cistrans, _ = convert_smiles_to_canonsmiles(
-            gold_smiles, ignore_cistrans=True, num_workers=num_workers
-        )
-        self.gold_smiles_chiral, _ = convert_smiles_to_canonsmiles(
-            gold_smiles, ignore_chiral=True, ignore_cistrans=True, num_workers=num_workers
-        )
-        self.gold_smiles_cistrans = self._replace_empty(self.gold_smiles_cistrans)
-        self.gold_smiles_chiral = self._replace_empty(self.gold_smiles_chiral)
-
-    @staticmethod
-    def _replace_empty(smiles_list):
-        return [
-            smiles if smiles is not None and isinstance(smiles, str) and smiles != "" else "<empty>"
-            for smiles in smiles_list
-        ]
-
-    def evaluate(self, pred_smiles):
-        results = {}
-        if self.tanimoto:
-            results["tanimoto"] = float(
-                np.mean(compute_tanimoto_similarities(self.gold_smiles, pred_smiles, self.num_workers))
-            )
-        pred_smiles_cistrans, _ = convert_smiles_to_canonsmiles(
-            pred_smiles, ignore_cistrans=True, num_workers=self.num_workers
-        )
-        results["canon_smiles"] = float(
-            np.mean(np.array(self.gold_smiles_cistrans) == np.array(pred_smiles_cistrans))
-        )
-        pred_smiles_chiral, _ = convert_smiles_to_canonsmiles(
-            pred_smiles, ignore_chiral=True, ignore_cistrans=True, num_workers=self.num_workers
-        )
-        results["graph"] = float(np.mean(np.array(self.gold_smiles_chiral) == np.array(pred_smiles_chiral)))
-        chiral = np.array([[g, p] for g, p in zip(self.gold_smiles_cistrans, pred_smiles_cistrans) if "@" in g])
-        results["chiral"] = float(np.mean(chiral[:, 0] == chiral[:, 1])) if len(chiral) > 0 else -1.0
-        return results
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ from peft import LoraConfig, TaskType, get_peft_model
 from torch.utils.data import Dataset
 from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig, TrainingArguments
 
+from calc_accuracy import canonicalize_smiles
 from dataset import DEFAULT_INSTRUCTION
 from DeepSeek_OCR_2 import (
     CleanEvalMetricsTrainer,
@@ -113,10 +114,72 @@ class LoRASFTConfig:
     accelerate_num_processes: int
     accelerate_gpu_ids: str | None
     train_on_responses_only: bool
+    log_train_accuracy: bool
+    train_accuracy_log_steps: int
     wandb: bool
     wandb_project: str
     wandb_run_name: str | None
     wandb_api_key: str | None
+
+
+class TrainCanonAccuracyTrainer(CleanEvalMetricsTrainer):
+    def __init__(self, *args, tokenizer, log_train_accuracy: bool, train_accuracy_log_steps: int, **kwargs):
+        super().__init__(*args, tokenizer=tokenizer, **kwargs)
+        self._tokenizer_for_acc = tokenizer
+        self._log_train_accuracy = bool(log_train_accuracy)
+        self._train_accuracy_log_steps = max(1, int(train_accuracy_log_steps))
+        self._last_accuracy_logged_step = -1
+
+    def _compute_batch_canon_accuracy(self, logits: torch.Tensor, labels: torch.Tensor) -> float | None:
+        # Causal LM predicts token t+1 from position t, so align with a one-token shift.
+        pred_ids = torch.argmax(logits[:, :-1, :], dim=-1)
+        shifted_labels = labels[:, 1:]
+        total = 0
+        matched = 0
+        for i in range(shifted_labels.size(0)):
+            mask = shifted_labels[i] != -100
+            if not torch.any(mask):
+                continue
+            gold_text = self._tokenizer_for_acc.decode(
+                shifted_labels[i][mask].tolist(),
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            ).strip()
+            pred_text = self._tokenizer_for_acc.decode(
+                pred_ids[i][mask].tolist(),
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            ).strip()
+            canon_gold, _ = canonicalize_smiles(gold_text, ignore_cistrans=True)
+            canon_pred, _ = canonicalize_smiles(pred_text, ignore_cistrans=True)
+            canon_gold = canon_gold if canon_gold else "<empty>"
+            canon_pred = canon_pred if canon_pred else "<empty>"
+            total += 1
+            if canon_gold == canon_pred:
+                matched += 1
+        if total == 0:
+            return None
+        return float(matched / total)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):  # type: ignore[override]
+        outputs = model(**inputs)
+        loss = outputs["loss"] if isinstance(outputs, dict) else outputs.loss
+        labels = inputs.get("labels")
+        step = int(self.state.global_step)
+        should_log = (
+            self._log_train_accuracy
+            and model.training
+            and labels is not None
+            and step % self._train_accuracy_log_steps == 0
+            and step != self._last_accuracy_logged_step
+        )
+        if should_log and hasattr(outputs, "logits"):
+            with torch.no_grad():
+                acc = self._compute_batch_canon_accuracy(outputs.logits.detach(), labels.detach())
+            if acc is not None:
+                self.log({"train/accuracy": acc})
+                self._last_accuracy_logged_step = step
+        return (loss, outputs) if return_outputs else loss
 
 
 def validate_config(cfg: LoRASFTConfig) -> None:
@@ -203,6 +266,8 @@ def validate_config(cfg: LoRASFTConfig) -> None:
                     raise ValueError(f"val_sets[{i}].realistic_image_root is required for realistic mode")
                 if not os.path.isdir(vs.realistic_image_root):
                     raise ValueError(f"val_sets[{i}].realistic_image_root not found: {vs.realistic_image_root}")
+    if cfg.train_accuracy_log_steps <= 0:
+        raise ValueError("train_accuracy_log_steps must be > 0")
 
 
 def load_config(config_path: str) -> LoRASFTConfig:
@@ -241,6 +306,8 @@ def load_config(config_path: str) -> LoRASFTConfig:
     raw["use_accelerate"] = bool(raw.get("use_accelerate", False))
     raw["accelerate_num_processes"] = int(raw.get("accelerate_num_processes", 1))
     raw["accelerate_gpu_ids"] = raw.get("accelerate_gpu_ids", None)
+    raw["log_train_accuracy"] = bool(raw.get("log_train_accuracy", True))
+    raw["train_accuracy_log_steps"] = int(raw.get("train_accuracy_log_steps", 20))
     restart_raw = dict(raw.get("restart", {}) or {})
     if "enable" not in restart_raw:
         restart_raw["enable"] = raw.get("restart", True)
@@ -547,9 +614,11 @@ def main() -> None:
         save_steps=save_steps,
         evaluation_strategy="no",
     )
-    trainer = CleanEvalMetricsTrainer(
+    trainer = TrainCanonAccuracyTrainer(
         model=model,
         tokenizer=tokenizer,
+        log_train_accuracy=cfg.log_train_accuracy,
+        train_accuracy_log_steps=cfg.train_accuracy_log_steps,
         data_collator=data_collator,
         train_dataset=train_dataset,
         args=training_args,

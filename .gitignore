@@ -10,6 +10,8 @@ wandb/
 weight/
 weight_lora_sft/
 weight_full_sft/
+lora_sft_evaluation_outputs/
+full_sft_evaluation_outputs/
 github.txt
 *.zip
 *.pt

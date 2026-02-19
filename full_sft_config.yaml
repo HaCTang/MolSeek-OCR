@@ -4,24 +4,24 @@ train_sets:
     data_mode: pre_rendered # dynamic / pre_rendered / realistic
     pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
     instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: 6400
+    sample_num: 64000
 
-  # - train_csv: ./training_data/pubchem/train_200k.csv
-  #   data_mode: pre_rendered
-  #   pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
-  #   instruction: "<image>\n Give me the SMILES of the molecule. "
-  #   sample_num: 64000
+  - train_csv: ./training_data/pubchem/train_200k.csv
+    data_mode: pre_rendered
+    pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: 64000
 
-  # - train_csv: ./training_data/uspto_mol/train_200k.csv
-  #   data_mode: realistic
-  #   realistic_image_root: ./training_data
-  #   instruction: "<image>\n Give me the SMILES of the molecule. "
-  #   sample_num: 64000
+  - train_csv: ./training_data/uspto_mol/train_200k.csv
+    data_mode: realistic
+    realistic_image_root: ./training_data
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: 64000
 
 enable_val_sets: False
 eval_every_steps: 1500
 eval_on_start: false
-eval_on_end: true
+eval_on_end: false
 val_sets:
   - name: CLEF_p
     val_csv: ./benchmark/perturb/CLEF_p.csv
@@ -105,10 +105,10 @@ batch_size: 4
 grad_accum: 8
 learning_rate: 0.00002
 weight_decay: 0.001
-warmup_steps: 10
-max_steps: 50
+warmup_steps: 100
+max_steps: 3000
 epochs: 0.0
-save_steps: 50
+save_steps: 150
 optim: adamw_torch_fused
 allow_tf32: true
 enable_gradient_checkpointing: true
@@ -128,13 +128,15 @@ use_accelerate: true
 accelerate_num_processes: 4
 accelerate_gpu_ids: "0,1,2,3"
 train_on_responses_only: true
+log_train_accuracy: true
+train_accuracy_log_steps: 20
 restart:
-  enable: true
+  enable: false
   dir: ./weight_full_sft
   auto_resume_from_latest_checkpoint: true
   resume_from_checkpoint: null
   wandb_resume_same_run: true
 wandb: true
 wandb_project: ChemSeek-OCR
-wandb_run_name: fullsft-test
+wandb_run_name: smiles-fullsft-3X64k-1epoch-finetune
 wandb_api_key: null

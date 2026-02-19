@@ -164,6 +164,8 @@ use_accelerate: true
 accelerate_num_processes: 4
 accelerate_gpu_ids: "0,1,2,3"
 train_on_responses_only: true
+log_train_accuracy: true
+train_accuracy_log_steps: 20
 restart:
   enable: false
   dir: ./weight
