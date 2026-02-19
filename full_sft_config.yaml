@@ -103,10 +103,10 @@ val_sets:
 seed: 3407
 batch_size: 4
 grad_accum: 8
-learning_rate: 0.00002
+learning_rate: 0.00001
 weight_decay: 0.001
 warmup_steps: 100
-max_steps: 3000
+max_steps: 1500
 epochs: 0.0
 save_steps: 150
 optim: adamw_torch_fused
@@ -138,5 +138,5 @@ restart:
   wandb_resume_same_run: true
 wandb: true
 wandb_project: ChemSeek-OCR
-wandb_run_name: smiles-fullsft-3X64k-1epoch-finetune
+wandb_run_name: smiles-fullsft-3X64k-1epoch-lr0.00001-afterlora-finetune
 wandb_api_key: null
