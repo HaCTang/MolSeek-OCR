@@ -4,19 +4,19 @@ train_sets:
     data_mode: pre_rendered # dynamic / pre_rendered / realistic
     pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
     instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: 64000
+    sample_num: 128000
 
   - train_csv: ./training_data/pubchem/train_200k.csv
     data_mode: pre_rendered
     pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
     instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: 64000
+    sample_num: 128000
 
   - train_csv: ./training_data/uspto_mol/train_200k.csv
     data_mode: realistic
     realistic_image_root: ./training_data
     instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: 64000
+    sample_num: 128000
 
 enable_val_sets: false
 eval_every_steps: 1500
