@@ -13,6 +13,7 @@ weight_full_sft/
 lora_sft_evaluation_outputs/
 full_sft_evaluation_outputs/
 merged*/
+merged_lora_sft_3X64_1EPOCH_model/
 github.txt
 *.zip
 *.pt
