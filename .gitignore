@@ -12,6 +12,7 @@ weight_lora_sft/
 weight_full_sft/
 lora_sft_evaluation_outputs/
 full_sft_evaluation_outputs/
+merged*/
 github.txt
 *.zip
 *.pt
