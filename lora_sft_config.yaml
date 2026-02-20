@@ -25,7 +25,7 @@ train_sets:
   #   pre_rendered_image_dir: null
   #   realistic_image_root: null
   #   instruction: "<image>\n Give me the SMILES of the molecule. "
-  #   style: molscribe_default
+  #   style: molscribe_default # molscribe_default / chemdraw_like
   #   mol_augment: true
   #   include_condensed: False
   #   max_samples: null
