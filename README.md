@@ -208,21 +208,35 @@ The RL phase is divided into three progressive stages to ensure the stability of
 
 ### Routing Replay RL
 
+Check **router_rl.py** and **router_rl_config.yaml**:
+```bash
+python router_rl.py --config router_rl_config.yaml
+```
+
 · Freeze router
+
 · Replay routing
+
 · Train expert only
+
 Goal: Make experts sensitive to reward signals.
 
 ### Soft Replay RL
 
 A trade-off approach:
+
 · Forward: Use current router.
+
 · Backward: Apply stop-gradient to the router.
 
 ### Full Parameter RL
 
 After experts stabilize:
+
 · Disable replay.
+
 · Unfreeze router.
+
 · Set $lr_{router} = 0.01 \sim 0.1 \times lr_{main}$.
+
 · Strengthen balance + entropy regularization.
