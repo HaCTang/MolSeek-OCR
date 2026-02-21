@@ -26,7 +26,7 @@ pip install vllm-0.8.5+cu118-cp38-abi3-manylinux1_x86_64.whl
 pip install -r requirements.txt
 pip install flash-attn==2.7.3 --no-build-isolation
 pip install peft accelerate wandb
-pip install matplotlib albumentations opencv-python rdkit SmilesPE
+pip install matplotlib albumentations opencv-python rdkit SmilesPE pandas
 ```
 
 **Note:** if you want vLLM and transformers codes to run in the same environment, you don't need to worry about this installation error like: vllm 0.8.5+cu118 requires transformers>=4.51.1

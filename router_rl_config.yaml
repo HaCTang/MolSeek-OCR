@@ -1,0 +1,88 @@
+pretrained_weight_path: ./weight_progressive_sft/checkpoint-3000
+
+train_sets:
+  - train_csv: ./training_data/pubchem/train_200k.csv
+    data_mode: pre_rendered
+    pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: 32000
+
+  - train_csv: ./training_data/pubchem/train_200k.csv
+    data_mode: pre_rendered
+    pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: 32000
+
+  - train_csv: ./training_data/uspto_mol/train_200k.csv
+    data_mode: realistic
+    realistic_image_root: ./training_data
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: 32000
+
+seed: 3407
+output_dir: ./weight_router_rl
+
+# Optimization
+batch_size: 4
+grad_accum: 2
+max_steps: 10
+warmup_steps: 1
+learning_rate: 0.000002
+weight_decay: 0.0
+max_grad_norm: 1.0
+
+# Runtime
+allow_tf32: true
+load_in_4bit: false
+attn_implementation: flash_attention_2
+enable_gradient_checkpointing: true
+dataloader_num_workers: 12
+dataloader_persistent_workers: true
+
+# DeepSeek-OCR image settings
+image_size: 768
+base_size: 1024
+crop_mode: true
+train_on_responses_only: true
+
+# GRPO sampling
+generation_num: 6
+generation_max_new_tokens: 80
+generation_temperature: 0.7
+generation_top_p: 0.9
+grpo_beta: 0.01
+grpo_adv_epsilon: 0.000001
+use_reference_model: true
+
+# Reward design for molecular OCR
+reward_weights:
+  validity: 2.0
+  tanimoto: 1.0
+  canon_smiles: 2.0
+  graph: 1.5
+  chiral: 1.5
+chiral_no_annotation_reward: 1.0
+
+# MoE router-only training
+router_trainable_patterns:
+  - "mlp.gate."
+
+# Launch
+use_accelerate: false
+accelerate_num_processes: 1
+accelerate_gpu_ids: "0"
+
+# Saving / logging
+save_steps: 150
+log_steps: 5
+restart:
+  enable: false
+  dir: ./weight_router_rl
+  auto_resume_from_latest_checkpoint: false
+  resume_from_checkpoint: null
+  wandb_resume_same_run: false
+
+wandb: true
+wandb_project: ChemSeek-OCR
+wandb_run_name: smiles-router-grpo-48g-singlegpu
+wandb_api_key: null

@@ -16,6 +16,7 @@ merged*/
 merged_lora_sft_3X64_1EPOCH_model/
 weight_progressive_sft/
 weight*/
+progressive_sft_evaluation_outputs/
 github.txt
 *.zip
 *.pt
