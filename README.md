@@ -202,3 +202,27 @@ You can run **full_sft.py** with:
 python full_sft.py --config full_sft_config.yaml
 ```
 
+## RL
+
+The RL phase is divided into three progressive stages to ensure the stability of the MoE architecture while optimizing for chemical SMILES accuracy.
+
+### Routing Replay RL
+
+· Freeze router
+· Replay routing
+· Train expert only
+Goal: Make experts sensitive to reward signals.
+
+### Soft Replay RL
+
+A trade-off approach:
+· Forward: Use current router.
+· Backward: Apply stop-gradient to the router.
+
+### Full Parameter RL
+
+After experts stabilize:
+· Disable replay.
+· Unfreeze router.
+· Set $lr_{router} = 0.01 \sim 0.1 \times lr_{main}$.
+· Strengthen balance + entropy regularization.

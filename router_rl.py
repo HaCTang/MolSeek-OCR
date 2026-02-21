@@ -8,8 +8,10 @@ from typing import Any, Dict, Iterator, List
 
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
+from tqdm.auto import tqdm
 from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig
 
 from calc_accuracy import canonicalize_smiles, tanimoto_similarity
@@ -93,7 +95,7 @@ class RouterRLConfig:
     use_reference_model: bool
     reward_weights: RewardWeightConfig
     chiral_no_annotation_reward: float
-    router_trainable_patterns: List[str]
+    expert_trainable_patterns: List[str]
     use_accelerate: bool
     accelerate_num_processes: int
     accelerate_gpu_ids: str | None
@@ -289,10 +291,10 @@ def _combine_reward(components: Dict[str, float], weights: RewardWeightConfig) -
     return float(total)
 
 
-def _set_router_trainable_parameters(model: Any, patterns: List[str]) -> None:
+def _set_expert_trainable_parameters(model: Any, patterns: List[str]) -> None:
     normalized_patterns = [p.lower().strip() for p in patterns if str(p).strip()]
     if not normalized_patterns:
-        normalized_patterns = ["mlp.gate.", "router"]
+        normalized_patterns = ["mlp.experts.", "mlp.shared_experts."]
 
     trainable_count = 0
     total_count = 0
@@ -301,6 +303,9 @@ def _set_router_trainable_parameters(model: Any, patterns: List[str]) -> None:
         total_count += param.numel()
         lowered = name.lower()
         should_train = any(pattern in lowered for pattern in normalized_patterns)
+        if ".mlp.gate" in lowered:
+            # Routing Replay: always freeze gate/router.
+            should_train = False
         param.requires_grad = should_train
         if should_train:
             trainable_count += param.numel()
@@ -308,17 +313,15 @@ def _set_router_trainable_parameters(model: Any, patterns: List[str]) -> None:
                 trainable_names.append(name)
 
     ratio = 100.0 * float(trainable_count) / float(max(total_count, 1))
-    print(f"Router trainable params: {trainable_count:,} / {total_count:,} ({ratio:.4f}%)")
+    print(f"Expert trainable params: {trainable_count:,} / {total_count:,} ({ratio:.4f}%)")
     if trainable_names:
         preview = "\n".join([f"  - {n}" for n in trainable_names])
         print(f"Trainable parameter name preview:\n{preview}")
 
     if trainable_count == 0:
-        # DeepSeek-OCR-2 MoE router modules are typically under `mlp.gate` (MoEGate),
-        # not necessarily containing the literal token "router".
-        fallback_patterns = ["mlp.gate."]
+        fallback_patterns = ["mlp.experts."]
         print(
-            "No parameters matched configured router patterns. "
+            "No parameters matched configured expert patterns. "
             f"Trying fallback patterns: {fallback_patterns}"
         )
         trainable_count = 0
@@ -328,6 +331,8 @@ def _set_router_trainable_parameters(model: Any, patterns: List[str]) -> None:
             total_count += param.numel()
             lowered = name.lower()
             should_train = any(pattern in lowered for pattern in fallback_patterns)
+            if ".mlp.gate" in lowered:
+                should_train = False
             param.requires_grad = should_train
             if should_train:
                 trainable_count += param.numel()
@@ -335,16 +340,111 @@ def _set_router_trainable_parameters(model: Any, patterns: List[str]) -> None:
                     trainable_names.append(name)
 
         ratio = 100.0 * float(trainable_count) / float(max(total_count, 1))
-        print(f"Fallback router trainable params: {trainable_count:,} / {total_count:,} ({ratio:.4f}%)")
+        print(f"Fallback expert trainable params: {trainable_count:,} / {total_count:,} ({ratio:.4f}%)")
         if trainable_names:
             preview = "\n".join([f"  - {n}" for n in trainable_names])
             print(f"Fallback trainable parameter name preview:\n{preview}")
 
     if trainable_count == 0:
         raise RuntimeError(
-            "No trainable parameters matched router_trainable_patterns and fallback patterns. "
-            f"Patterns: {normalized_patterns}, fallback: ['mlp.gate.']"
+            "No trainable parameters matched expert_trainable_patterns and fallback patterns. "
+            f"Patterns: {normalized_patterns}, fallback: ['mlp.experts.']"
         )
+
+
+class RoutingReplayController:
+    """
+    Routing Replay:
+      1) rollout/capture: record each MoE gate output (topk_idx/topk_weight)
+      2) update/replay: bypass gate computation and force cached routing
+    """
+
+    def __init__(self, model: Any):
+        self.model = model
+        self._gate_modules: List[tuple[str, Any]] = []
+        self._orig_gate_forward: Dict[int, Any] = {}
+        self._patched = False
+        self._discover_and_patch()
+
+    def _discover_and_patch(self) -> None:
+        for name, module in self.model.named_modules():
+            if name.endswith(".mlp.gate"):
+                self._gate_modules.append((name, module))
+        if not self._gate_modules:
+            raise RuntimeError("No MoE gate modules found (expected names ending with '.mlp.gate').")
+
+        import types
+
+        for _name, gate in self._gate_modules:
+            self._orig_gate_forward[id(gate)] = gate.forward
+
+            def _patched_forward(this_gate, hidden_states, _orig=self._orig_gate_forward[id(gate)]):
+                mode = getattr(this_gate, "_rr_mode", "off")
+                if mode == "replay":
+                    payload = getattr(this_gate, "_rr_payload", None)
+                    if payload is None:
+                        raise RuntimeError("Routing replay mode enabled but no cached payload is attached.")
+                    topk_idx, topk_weight = payload
+                    # DeepseekV2MoE training path unconditionally applies AddAuxiliaryLoss,
+                    # so we must provide a scalar tensor (not None) for aux_loss.
+                    aux_loss = torch.zeros((), device=hidden_states.device, dtype=torch.float32)
+                    return (
+                        topk_idx.to(hidden_states.device),
+                        topk_weight.to(hidden_states.device),
+                        aux_loss,
+                    )
+
+                out = _orig(hidden_states)
+                if mode == "capture":
+                    topk_idx, topk_weight, _aux_loss = out
+                    # Keep on CPU to reduce replay memory pressure.
+                    this_gate._rr_payload = (topk_idx.detach().cpu(), topk_weight.detach().cpu())
+                return out
+
+            gate.forward = types.MethodType(_patched_forward, gate)
+            gate._rr_mode = "off"
+            gate._rr_payload = None
+        self._patched = True
+        print(f"Routing replay controller attached to {len(self._gate_modules)} MoE gates.")
+
+    def _set_mode(self, mode: str) -> None:
+        for _, gate in self._gate_modules:
+            gate._rr_mode = mode
+
+    def capture(self, model_inputs: Dict[str, Any]) -> Dict[str, tuple[torch.Tensor, torch.Tensor]]:
+        if not self._patched:
+            raise RuntimeError("Routing replay controller is not patched.")
+
+        for _, gate in self._gate_modules:
+            gate._rr_payload = None
+        self._set_mode("capture")
+        with torch.no_grad():
+            _ = self.model(
+                input_ids=model_inputs["input_ids"],
+                attention_mask=model_inputs["attention_mask"],
+                images=model_inputs["images"],
+                images_seq_mask=model_inputs["images_seq_mask"],
+                images_spatial_crop=model_inputs["images_spatial_crop"],
+            )
+        self._set_mode("off")
+
+        cache: Dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+        for name, gate in self._gate_modules:
+            payload = getattr(gate, "_rr_payload", None)
+            if payload is None:
+                raise RuntimeError(f"Failed to capture routing payload for gate: {name}")
+            cache[name] = payload
+        return cache
+
+    def enable_replay(self, cache: Dict[str, tuple[torch.Tensor, torch.Tensor]]) -> None:
+        for name, gate in self._gate_modules:
+            if name not in cache:
+                raise RuntimeError(f"Missing routing replay cache for gate: {name}")
+            gate._rr_payload = cache[name]
+        self._set_mode("replay")
+
+    def disable_replay(self) -> None:
+        self._set_mode("off")
 
 
 def _iter_dataloader_forever(loader: DataLoader) -> Iterator[List[Dict[str, Any]]]:
@@ -391,9 +491,16 @@ def _compute_completion_logprob(model: Any, completion_inputs: Dict[str, Any]) -
     logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
     shift_logits = logits[:, :-1, :]
     shift_labels = completion_inputs["input_ids"][:, 1:]
-    token_log_probs = torch.log_softmax(shift_logits, dim=-1).gather(
-        dim=-1, index=shift_labels.unsqueeze(-1)
-    ).squeeze(-1)
+    # DeepSeek's lm_head returns float32 logits by default; casting to model dtype
+    # and using CE avoids an explicit full log_softmax allocation.
+    target_dtype = torch.bfloat16 if shift_logits.device.type == "cuda" else shift_logits.dtype
+    shift_logits = shift_logits.to(target_dtype)
+    token_nll = F.cross_entropy(
+        shift_logits.reshape(-1, shift_logits.size(-1)),
+        shift_labels.reshape(-1),
+        reduction="none",
+    ).reshape_as(shift_labels)
+    token_log_probs = -token_nll
 
     prompt_token_count = int(completion_inputs["prompt_token_count"])
     start_idx = max(prompt_token_count - 1, 0)
@@ -409,8 +516,17 @@ def _compute_kl_like_penalty(
     model: Any,
     ref_model: Any,
     completion_inputs: Dict[str, Any],
+    routing_replay: RoutingReplayController | None = None,
+    routing_cache: Dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
 ) -> torch.Tensor:
-    current_logp = _compute_completion_logprob(model, completion_inputs)
+    if routing_replay is not None and routing_cache is not None:
+        routing_replay.enable_replay(routing_cache)
+        try:
+            current_logp = _compute_completion_logprob(model, completion_inputs)
+        finally:
+            routing_replay.disable_replay()
+    else:
+        current_logp = _compute_completion_logprob(model, completion_inputs)
     with torch.no_grad():
         ref_logp = _compute_completion_logprob(ref_model, completion_inputs)
     return (current_logp - ref_logp).pow(2)
@@ -422,25 +538,66 @@ def _generate_completion(
     prompt_inputs: Dict[str, Any],
     cfg: RouterRLConfig,
 ) -> str:
+    device = prompt_inputs["input_ids"].device
+    input_ids = prompt_inputs["input_ids"]
+    images_seq_mask = prompt_inputs["images_seq_mask"]
+    images = prompt_inputs["images"]
+    images_spatial_crop = prompt_inputs["images_spatial_crop"]
+    eos_token_id = tokenizer.eos_token_id
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos_token_id
+    if pad_token_id is None:
+        pad_token_id = 0
+
+    generated_ids: List[int] = []
+
+    def _sample_from_logits(next_logits: torch.Tensor) -> int:
+        if cfg.generation_temperature <= 0:
+            return int(torch.argmax(next_logits, dim=-1).item())
+        scaled = next_logits / max(cfg.generation_temperature, 1e-6)
+        probs = torch.softmax(scaled, dim=-1)
+        if cfg.generation_top_p < 1.0:
+            sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+            cumsum = torch.cumsum(sorted_probs, dim=-1)
+            cutoff = cumsum > cfg.generation_top_p
+            cutoff[..., 1:] = cutoff[..., :-1].clone()
+            cutoff[..., 0] = False
+            sorted_probs = sorted_probs.masked_fill(cutoff, 0.0)
+            sorted_probs = sorted_probs / torch.clamp(sorted_probs.sum(dim=-1, keepdim=True), min=1e-12)
+            sampled = torch.multinomial(sorted_probs, num_samples=1)
+            token_id = sorted_idx.gather(-1, sampled).squeeze(-1)
+            return int(token_id.item())
+        token_id = torch.multinomial(probs, num_samples=1).squeeze(-1)
+        return int(token_id.item())
+
     with torch.no_grad():
-        generated = model.generate(
-            input_ids=prompt_inputs["input_ids"],
-            attention_mask=prompt_inputs["attention_mask"],
-            images=prompt_inputs["images"],
-            images_seq_mask=prompt_inputs["images_seq_mask"],
-            images_spatial_crop=prompt_inputs["images_spatial_crop"],
-            do_sample=True,
-            temperature=cfg.generation_temperature,
-            top_p=cfg.generation_top_p,
-            max_new_tokens=cfg.generation_max_new_tokens,
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.pad_token_id,
-            use_cache=True,
-        )
-    prompt_len = prompt_inputs["input_ids"].shape[1]
-    completion_ids = generated[0, prompt_len:]
+        for _ in range(cfg.generation_max_new_tokens):
+            attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                images=images,
+                images_seq_mask=images_seq_mask,
+                images_spatial_crop=images_spatial_crop,
+            )
+            logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
+            next_token_logits = logits[:, -1, :]
+            next_token_id = _sample_from_logits(next_token_logits)
+            generated_ids.append(next_token_id)
+
+            next_token_tensor = torch.tensor([[next_token_id]], dtype=torch.long, device=device)
+            input_ids = torch.cat([input_ids, next_token_tensor], dim=1)
+            next_mask_tensor = torch.zeros((1, 1), dtype=torch.bool, device=device)
+            images_seq_mask = torch.cat([images_seq_mask, next_mask_tensor], dim=1)
+
+            if eos_token_id is not None and next_token_id == eos_token_id:
+                break
+
+    # Trim eos/pad tail for cleaner reward text.
+    while generated_ids and generated_ids[-1] in {eos_token_id, pad_token_id}:
+        generated_ids.pop()
+
     text = tokenizer.decode(
-        completion_ids.tolist(),
+        generated_ids,
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     ).strip()
@@ -561,7 +718,9 @@ def load_config(config_path: str) -> RouterRLConfig:
     raw["grpo_adv_epsilon"] = float(raw.get("grpo_adv_epsilon", 1e-6))
     raw["use_reference_model"] = bool(raw.get("use_reference_model", False))
     raw["chiral_no_annotation_reward"] = float(raw.get("chiral_no_annotation_reward", 1.0))
-    raw["router_trainable_patterns"] = list(raw.get("router_trainable_patterns", ["router"]))
+    raw["expert_trainable_patterns"] = list(
+        raw.get("expert_trainable_patterns", raw.get("router_trainable_patterns", ["mlp.experts."]))
+    )
     raw["use_accelerate"] = bool(raw.get("use_accelerate", False))
     raw["accelerate_num_processes"] = int(raw.get("accelerate_num_processes", 1))
     raw["accelerate_gpu_ids"] = raw.get("accelerate_gpu_ids", None)
@@ -636,6 +795,7 @@ def load_config(config_path: str) -> RouterRLConfig:
         "include_condensed",
         "max_samples",
         "sample_num",
+        "router_trainable_patterns",
     ]:
         raw.pop(legacy_key, None)
 
@@ -714,8 +874,13 @@ def main() -> None:
     )
     apply_deepseek_runtime_patches(model)
     model.config.use_cache = True
-    if cfg.enable_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    if cfg.enable_gradient_checkpointing:
+        # Routing Replay reuses cached gate decisions between rollout and update passes.
+        # torch checkpoint recomputation can break this assumption and emits large
+        # metadata dumps ("saved metadata / recomputed metadata"). Disable it here.
+        print("Routing Replay mode: forcing gradient checkpointing off for stable replay.")
+    if hasattr(model, "gradient_checkpointing_disable"):
+        model.gradient_checkpointing_disable()
     text_encode, basic_image_transform_cls, dynamic_preprocess_fn = load_modeling_utils_from_loaded_model(model)
     prompt_builder = DeepSeekPromptBuilder(
         tokenizer=tokenizer,
@@ -729,9 +894,10 @@ def main() -> None:
         train_on_responses_only=cfg.train_on_responses_only,
     )
 
-    _set_router_trainable_parameters(model, cfg.router_trainable_patterns)
+    _set_expert_trainable_parameters(model, cfg.expert_trainable_patterns)
     device = _to_device(model)
     model.to(device)
+    routing_replay = RoutingReplayController(model)
 
     reference_model = None
     if cfg.use_reference_model and cfg.grpo_beta > 0:
@@ -768,7 +934,7 @@ def main() -> None:
     scheduler = _build_scheduler(cfg, optimizer)
 
     print(
-        f"Starting GRPO router RL: max_steps={cfg.max_steps}, batch_size={cfg.batch_size}, "
+        f"Starting GRPO Routing-Replay RL: max_steps={cfg.max_steps}, batch_size={cfg.batch_size}, "
         f"grad_accum={cfg.grad_accum}, generations={cfg.generation_num}"
     )
 
@@ -781,7 +947,13 @@ def main() -> None:
     running_chiral = 0.0
 
     model.train()
-    for step in range(1, cfg.max_steps + 1):
+    progress = tqdm(
+        range(1, cfg.max_steps + 1),
+        total=cfg.max_steps,
+        desc="RoutingReplay-GRPO",
+        dynamic_ncols=True,
+    )
+    for step in progress:
         optimizer.zero_grad(set_to_none=True)
         accum_loss_value = 0.0
         accum_reward_value = 0.0
@@ -806,6 +978,7 @@ def main() -> None:
                 completions: List[str] = []
                 rewards: List[float] = []
                 completion_logprobs: List[torch.Tensor] = []
+                completion_routing_caches: List[Dict[str, tuple[torch.Tensor, torch.Tensor]]] = []
                 component_records: List[Dict[str, float]] = []
 
                 for _gen_idx in range(cfg.generation_num):
@@ -822,8 +995,14 @@ def main() -> None:
                     component_records.append(components)
 
                     completion_inputs = prompt_builder.build_completion_inputs(user_message, completion, device)
-                    logp = _compute_completion_logprob(model, completion_inputs)
+                    routing_cache = routing_replay.capture(completion_inputs)
+                    routing_replay.enable_replay(routing_cache)
+                    try:
+                        logp = _compute_completion_logprob(model, completion_inputs)
+                    finally:
+                        routing_replay.disable_replay()
                     completion_logprobs.append(logp)
+                    completion_routing_caches.append(routing_cache)
 
                 reward_tensor = torch.tensor(rewards, dtype=torch.float32, device=device)
                 advantages = (reward_tensor - reward_tensor.mean()) / (reward_tensor.std() + cfg.grpo_adv_epsilon)
@@ -835,7 +1014,16 @@ def main() -> None:
                         completion_inputs = prompt_builder.build_completion_inputs(
                             user_message, completions[j], device
                         )
-                        kl_like = _compute_kl_like_penalty(model, reference_model, completion_inputs)
+                        if j < len(completion_routing_caches):
+                            kl_like = _compute_kl_like_penalty(
+                                model,
+                                reference_model,
+                                completion_inputs,
+                                routing_replay=routing_replay,
+                                routing_cache=completion_routing_caches[j],
+                            )
+                        else:
+                            kl_like = _compute_kl_like_penalty(model, reference_model, completion_inputs)
                         term = term + cfg.grpo_beta * kl_like
                     sample_losses.append(term)
                 sample_loss = torch.stack(sample_losses).mean()
@@ -863,13 +1051,21 @@ def main() -> None:
         scheduler.step()
 
         running_total_loss += accum_loss_value
-        running_reward += accum_reward_value / max(cfg.grad_accum, 1)
+        step_reward = accum_reward_value / max(cfg.grad_accum, 1)
+        running_reward += step_reward
         if accum_component_count > 0:
             running_validity += accum_component_sums["validity"] / accum_component_count
             running_tanimoto += accum_component_sums["tanimoto"] / accum_component_count
             running_canon += accum_component_sums["canon_smiles"] / accum_component_count
             running_graph += accum_component_sums["graph"] / accum_component_count
             running_chiral += accum_component_sums["chiral"] / accum_component_count
+
+        # Real-time progress bar stats (updated every step).
+        progress.set_postfix(
+            loss=f"{accum_loss_value:.4f}",
+            reward=f"{step_reward:.4f}",
+            tanimoto=f"{(accum_component_sums['tanimoto'] / max(accum_component_count, 1)):.4f}",
+        )
 
         if step % cfg.log_steps == 0:
             denom = float(cfg.log_steps)
@@ -910,6 +1106,7 @@ def main() -> None:
         model.save_pretrained(cfg.output_dir)
         tokenizer.save_pretrained(cfg.output_dir)
         print(f"Saved router RL model to: {cfg.output_dir}")
+    progress.close()
 
 
 if __name__ == "__main__":

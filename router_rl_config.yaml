@@ -23,7 +23,7 @@ seed: 3407
 output_dir: ./weight_router_rl
 
 # Optimization
-batch_size: 4
+batch_size: 1
 grad_accum: 2
 max_steps: 10
 warmup_steps: 1
@@ -63,9 +63,10 @@ reward_weights:
   chiral: 1.5
 chiral_no_annotation_reward: 1.0
 
-# MoE router-only training
-router_trainable_patterns:
-  - "mlp.gate."
+# Routing Replay: freeze router, update experts only
+expert_trainable_patterns:
+  - "mlp.experts."
+  - "mlp.shared_experts."
 
 # Launch
 use_accelerate: false
