@@ -196,7 +196,7 @@ The total batch size can be a little bit larger, around 512-2048.
 Learning rate is around 1/10 to 1/100 compared with previous LoRA, like 5e-6.
 Run 1-2 epochs (you should evaluate the steps).
 
-You can run **full_sft.py** with:
+You can run **progressive_sft.py** with:
 
 ```bash
 python progressive_sft.py --config progressive_sft_config.yaml

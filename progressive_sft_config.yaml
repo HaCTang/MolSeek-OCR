@@ -87,7 +87,7 @@ restart:
   auto_resume_from_latest_checkpoint: true
   resume_from_checkpoint: null
   wandb_resume_same_run: true
-wandb: true
+wandb: false
 wandb_project: ChemSeek-OCR
 wandb_run_name: smiles-progressive-lr0.000005-fullsft-after-merged-lora-3X64k-1epoch
 wandb_api_key: null
