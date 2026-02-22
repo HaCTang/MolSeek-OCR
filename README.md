@@ -206,6 +206,15 @@ python full_sft.py --config full_sft_config.yaml
 
 The RL phase is divided into three progressive stages to ensure the stability of the MoE architecture while optimizing for chemical SMILES accuracy.
 
+```bash
+conda create -n chemseek-ocr-verl python=3.12
+conda activate chemseek-ocr-verl
+git clone https://github.com/volcengine/verl.git
+cd verl
+pip install --no-deps -e .
+USE_MEGATRON=0 bash scripts/install_vllm_sglang_mcore_stable.sh
+```
+
 ### Routing Replay RL
 
 Check **router_rl.py** and **router_rl_config.yaml**:

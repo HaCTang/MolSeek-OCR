@@ -1,17 +1,45 @@
 pretrained_weight_path: ../DeepSeek-OCR-2
 train_sets:
   # pre_rendered mode example (uses pre-rendered images)
-  - train_csv: ./training_data/pubchem/train_200k.csv
-    data_mode: pre_rendered # dynamic / pre_rendered / realistic
-    pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
-    instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: 64000 # null or the number of samples to use
+  # - train_csv: ./training_data/pubchem/train_200k.csv
+  #   data_mode: pre_rendered # dynamic / pre_rendered / realistic
+  #   pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: 64000 # null or the number of samples to use
+
+  # - train_csv: ./training_data/pubchem/train_200k.csv
+  #   data_mode: pre_rendered # dynamic / pre_rendered / realistic
+  #   pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: 64000 # null or the number of samples to use
+
+  # - train_csv: ./training_data/uspto_mol/train_200k.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./training_data
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: 64000
 
   - train_csv: ./training_data/pubchem/train_200k.csv
-    data_mode: pre_rendered # dynamic / pre_rendered / realistic
-    pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
+    data_mode: dynamic
+    pre_rendered_image_dir: null
+    realistic_image_root: null
     instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: 64000 # null or the number of samples to use
+    style: molscribe_default # molscribe_default / chemdraw_like
+    mol_augment: true
+    include_condensed: False
+    max_samples: null
+    sample_num: 64000
+
+  - train_csv: ./training_data/pubchem/train_200k.csv
+    data_mode: dynamic
+    pre_rendered_image_dir: null
+    realistic_image_root: null
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    style: chemdraw_like # molscribe_default / chemdraw_like
+    mol_augment: false
+    include_condensed: False
+    max_samples: null
+    sample_num: 64000
 
   - train_csv: ./training_data/uspto_mol/train_200k.csv
     data_mode: realistic
@@ -125,10 +153,10 @@ batch_size: 4
 grad_accum: 8
 learning_rate: 0.0002
 weight_decay: 0.001
-warmup_steps: 100
-max_steps: 1500
+warmup_steps: 50
+max_steps: 200
 epochs: 0.0
-save_steps: 50
+save_steps: 100
 optim: adamw_torch_fused
 allow_tf32: true
 enable_gradient_checkpointing: true
@@ -172,7 +200,7 @@ restart:
   auto_resume_from_latest_checkpoint: true
   resume_from_checkpoint: null
   wandb_resume_same_run: true
-wandb: true
+wandb: false
 wandb_project: ChemSeek-OCR
-wandb_run_name: test4
+wandb_run_name: test_for_rl
 wandb_api_key: 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
