@@ -199,7 +199,7 @@ Run 1-2 epochs (you should evaluate the steps).
 You can run **full_sft.py** with:
 
 ```bash
-python full_sft.py --config full_sft_config.yaml
+python progressive_sft.py --config progressive_sft_config.yaml
 ```
 
 ## RL
