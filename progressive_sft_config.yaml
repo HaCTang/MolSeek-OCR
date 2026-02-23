@@ -1,22 +1,48 @@
-pretrained_weight_path: ./merged_lora_sft_3X64_1EPOCH_model/lora_checkpoint-1500
+pretrained_weight_path: ./merged_models/lora_checkpoint-200
 train_sets:
-  - train_csv: ./training_data/pubchem/train_200k.csv
-    data_mode: pre_rendered # dynamic / pre_rendered / realistic
-    pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
-    instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: 128000
+  # - train_csv: ./training_data/pubchem/train_200k.csv
+  #   data_mode: pre_rendered # dynamic / pre_rendered / realistic
+  #   pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: 128000
 
-  - train_csv: ./training_data/pubchem/train_200k.csv
-    data_mode: pre_rendered
-    pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
-    instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: 128000
+  # - train_csv: ./training_data/pubchem/train_200k.csv
+  #   data_mode: pre_rendered
+  #   pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: 128000
 
+  # - train_csv: ./training_data/uspto_mol/train_200k.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./training_data
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: 128000
+
+  - train_csv: ./training_data/pubchem/train_1m.csv
+    data_mode: dynamic
+    pre_rendered_image_dir: null
+    realistic_image_root: null
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    style: molscribe_default # molscribe_default / chemdraw_like
+    mol_augment: true
+    include_condensed: False
+    max_samples: null
+    sample_num: null
+  - train_csv: ./training_data/pubchem/train_1m.csv
+    data_mode: dynamic
+    pre_rendered_image_dir: null
+    realistic_image_root: null
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    style: chemdraw_like # molscribe_default / chemdraw_like
+    mol_augment: false
+    include_condensed: False
+    max_samples: null
+    sample_num: null
   - train_csv: ./training_data/uspto_mol/train_200k.csv
     data_mode: realistic
     realistic_image_root: ./training_data
     instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: 128000
+    sample_num: null
 
 enable_val_sets: false
 eval_every_steps: 1500
@@ -54,12 +80,12 @@ val_sets:
 seed: 3407
 batch_size: 4
 grad_accum: 8
-learning_rate: 0.000008
+learning_rate: 0.00002
 weight_decay: 0.001
-warmup_steps: 300
-max_steps: 3000
+warmup_steps: 50
+max_steps: 400
 epochs: 0.0
-save_steps: 300
+save_steps: 100
 optim: adamw_torch_fused
 allow_tf32: true
 enable_gradient_checkpointing: true

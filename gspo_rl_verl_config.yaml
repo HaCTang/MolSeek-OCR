@@ -1,0 +1,102 @@
+# ===========================================================================
+# GSPO RL – verl Configuration
+# For DeepSeek-OCR-2 on 4x RTX 6000 Ada (48 GB each)
+#
+# GSPO replaces KL regularisation with tight symmetric clipping, yielding
+# more stable policy updates.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+model:
+  path: ./weight_progressive_sft/checkpoint-400
+  trust_remote_code: true
+
+# ---------------------------------------------------------------------------
+# Data  (CSV -> parquet, run "prepare-data" first)
+# ---------------------------------------------------------------------------
+data:
+  output_dir: ./verl_data
+  instruction: "<image>\n Give me the SMILES of the molecule. "
+  max_prompt_length: 4096
+  max_response_length: 128
+
+  train_sets:
+    - train_csv: ./training_data/pubchem/train_200k.csv
+      data_mode: pre_rendered
+      pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
+      sample_num: 32000
+
+    - train_csv: ./training_data/pubchem/train_200k.csv
+      data_mode: pre_rendered
+      pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
+      sample_num: 32000
+
+    - train_csv: ./training_data/uspto_mol/train_200k.csv
+      data_mode: realistic
+      realistic_image_root: ./training_data
+      sample_num: 32000
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+training:
+  seed: 3407
+  total_epochs: 10
+  train_batch_size: 16
+  ppo_mini_batch_size: 8
+  ppo_micro_batch_size_per_gpu: 2
+  learning_rate: 0.000001
+  weight_decay: 0.1
+  clip_grad: 1.0
+  allow_tf32: true
+
+# ---------------------------------------------------------------------------
+# GSPO – tight symmetric clipping instead of KL
+# ---------------------------------------------------------------------------
+gspo:
+  group_size: 8
+  clip_ratio_low: 3.0e-4
+  clip_ratio_high: 4.0e-4
+  clip_ratio_c: 10.0
+  use_kl_loss: false
+  kl_loss_coef: 0.0
+  loss_agg_mode: seq-mean-token-mean
+  use_dynamic_bsz: true
+
+# ---------------------------------------------------------------------------
+# Reward weights  (same scale as router_rl_config.yaml)
+# ---------------------------------------------------------------------------
+reward_weights:
+  validity: 2.0
+  tanimoto: 1.0
+  canon_smiles: 2.0
+  graph: 1.5
+  chiral: 1.5
+chiral_no_annotation_reward: 0.0
+
+# ---------------------------------------------------------------------------
+# GPU / Hardware  (4x RTX 6000 Ada 48 GB)
+# ---------------------------------------------------------------------------
+gpu:
+  n_gpus_per_node: 4
+  gpu_ids: "0,1,2,3"
+  tensor_model_parallel_size: 2
+  gpu_memory_utilization: 0.5
+  param_offload: false
+  optimizer_offload: false
+  ref_param_offload: true
+
+# ---------------------------------------------------------------------------
+# Saving / Logging
+# ---------------------------------------------------------------------------
+output_dir: ./weight_gspo_rl_verl
+save_freq: 50
+test_freq: 5
+
+wandb:
+  enabled: true
+  project: ChemSeek-OCR
+  run_name: gspo-verl-4gpu
+  api_key: null

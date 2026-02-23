@@ -1,4 +1,4 @@
-pretrained_weight_path: ./weight_progressive_sft/checkpoint-3000
+pretrained_weight_path: ./weight_progressive_sft/checkpoint-400
 
 train_sets:
   - train_csv: ./training_data/pubchem/train_200k.csv

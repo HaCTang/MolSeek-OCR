@@ -185,7 +185,7 @@ Similar to LoRA SFT session, for training dataset setting in **lora_sft_config.y
     include_condensed: False
     max_samples: null
     sample_num: null
-  - train_csv: ./training_data/uspto_mol/train_200k.csv
+  - train_csv: ./training_data/uspto_mol/train_680k.csv
     data_mode: realistic
     realistic_image_root: ./training_data
     instruction: "<image>\n Give me the SMILES of the molecule. "
@@ -211,41 +211,35 @@ conda create -n chemseek-ocr-verl python=3.12
 conda activate chemseek-ocr-verl
 git clone https://github.com/volcengine/verl.git
 cd verl
-pip install --no-deps -e .
-USE_MEGATRON=0 bash scripts/install_vllm_sglang_mcore_stable.sh
+pip install --no-deps -e .[vllm]
+pip install matplotlib albumentations rdkit SmilesPE pandas
 ```
 
-### Routing Replay RL
+### GSPO RL
 
-Check **router_rl.py** and **router_rl_config.yaml**:
+GSPO (Group Sequence Policy Optimization) uses tight symmetric clipping (`clip_ratio_low`/`clip_ratio_high`) instead of KL regularization, providing more stable policy updates. The implementation is built on the [verl](https://github.com/volcengine/verl) framework and consists of three files:
+
+| File | Description |
+|------|-------------|
+| **prepare_verl_data.py** | Reads CSV datasets, resolves image paths, and writes train/val parquet splits in verl-compatible format. |
+| **gspo_rl_verl.py** | Defines the custom reward function (`compute_score`), multimodal dataset (`ChemSeekOCRDataset`), and assembles verl launch command with GSPO-specific Hydra overrides. |
+| **gspo_rl_verl_config.yaml** | All hyperparameters: model path, data sources, GSPO clipping, reward weights, GPU/FSDP/vLLM settings, and logging. |
+
+Key GSPO parameters in the config (`gspo:` section):
+
+- `clip_ratio_low` / `clip_ratio_high`: Tight symmetric clipping bounds (default 3e-4 / 4e-4) that replace KL penalty.
+- `clip_ratio_c`: Upper clip bound for the importance-sampling ratio (default 10.0).
+- `loss_agg_mode: seq-mean-token-mean`: Sequence-level then token-level mean aggregation.
+- `use_kl_loss: false` / `kl_loss_coef: 0.0`: KL loss is disabled; tight clipping suffices.
+- `group_size: 8`: Number of responses sampled per prompt for advantage estimation.
+- `use_dynamic_bsz: true`: Dynamic batch sizing based on token budget.
+
+The reward function computes five SMILES-based components (validity, tanimoto, canon_smiles, graph, chiral) with configurable weights, normalized to [0, 1] by dividing by the weight sum.
+
 ```bash
-python router_rl.py --config router_rl_config.yaml
+# Step 1: Prepare parquet data
+python prepare_verl_data.py --config gspo_rl_verl_config.yaml
+
+# Step 2: Launch GSPO training
+python gspo_rl_verl.py --config gspo_rl_verl_config.yaml
 ```
-
-· Freeze router
-
-· Replay routing
-
-· Train expert only
-
-Goal: Make experts sensitive to reward signals.
-
-### Soft Replay RL
-
-A trade-off approach:
-
-· Forward: Use current router.
-
-· Backward: Apply stop-gradient to the router.
-
-### Full Parameter RL
-
-After experts stabilize:
-
-· Disable replay.
-
-· Unfreeze router.
-
-· Set $lr_{router} = 0.01 \sim 0.1 \times lr_{main}$.
-
-· Strengthen balance + entropy regularization.
