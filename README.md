@@ -211,8 +211,10 @@ conda create -n chemseek-ocr-verl python=3.12
 conda activate chemseek-ocr-verl
 git clone https://github.com/volcengine/verl.git
 cd verl
-pip install --no-deps -e .[vllm]
-pip install matplotlib albumentations rdkit SmilesPE pandas
+pip install numpy==1.26.4 vllm==0.8.5 transformers==4.57
+pip install -e .[vllm]
+pip install flash-attn==2.7.3 --no-build-isolation
+pip install matplotlib albumentations rdkit SmilesPE pandas addict
 ```
 
 ### GSPO RL
@@ -238,7 +240,7 @@ The reward function computes five SMILES-based components (validity, tanimoto, c
 
 ```bash
 # Step 1: Prepare parquet data
-python prepare_verl_data.py --config gspo_rl_verl_config.yaml
+python prepare_verl_data.py --config gspo_rl_verl_config.yaml --workers 8
 
 # Step 2: Launch GSPO training
 python gspo_rl_verl.py --config gspo_rl_verl_config.yaml

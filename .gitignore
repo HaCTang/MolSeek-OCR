@@ -19,6 +19,8 @@ weight*/
 progressive_sft_evaluation_outputs/
 weight_router_rl/
 GSPO_verl_case/
+verl_data/
+outputs/
 github.txt
 *.zip
 *.pt

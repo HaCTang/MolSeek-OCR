@@ -4,6 +4,11 @@ Reads CSV files containing SMILES and image paths, resolves images on disk,
 and writes train/val parquet splits in the format expected by verl's
 ChemSeekOCRDataset.
 
+Supported data_mode values:
+  - pre_rendered: use existing images from a directory
+  - realistic:    use file_path column to locate existing images
+  - dynamic:      render SMILES to images on the fly via RDKit (dataset.py)
+
 Output columns (verl format):
   - prompt:       JSON-encoded list of chat messages
   - image_path:   absolute path to the molecule image
@@ -114,7 +119,40 @@ def _resolve_with_alt_ext(path: str) -> Optional[str]:
 # Data Preparation
 # =========================================================================
 
-def prepare_data(cfg: dict) -> None:
+def _build_style_config_dict(ts: dict) -> dict:
+    """Extract MoleculeStyleConfig kwargs from a train_set config entry."""
+    return {
+        "render_style": ts.get("style", "molscribe_default"),
+        "mol_augment": ts.get("mol_augment", True),
+        "include_condensed": ts.get("include_condensed", True),
+    }
+
+
+_WORKER_RENDERER = None
+
+
+def _init_render_worker(style_config_dict: dict) -> None:
+    """Initializer for each worker process in the pool."""
+    global _WORKER_RENDERER
+    from dataset import MoleculeStyleConfig, MoleculeStyleRenderer
+    _WORKER_RENDERER = MoleculeStyleRenderer(MoleculeStyleConfig(**style_config_dict))
+
+
+def _render_one(args: tuple) -> dict:
+    """Render a single SMILES to an image file. Runs inside a worker process."""
+    global _WORKER_RENDERER
+    sid, smiles, img_out = args
+    if os.path.isfile(img_out):
+        return {"sid": sid, "smiles": smiles, "image_path": img_out, "ok": True}
+    try:
+        img, _ = _WORKER_RENDERER.render(smiles)
+        img.save(img_out)
+        return {"sid": sid, "smiles": smiles, "image_path": img_out, "ok": True}
+    except Exception as e:
+        return {"sid": sid, "smiles": smiles, "image_path": None, "ok": False, "err": str(e)}
+
+
+def prepare_data(cfg: dict, num_workers: int = 1) -> None:
     """Convert CSV datasets to parquet format for verl GSPO training."""
     import pandas as pd
 
@@ -138,40 +176,94 @@ def prepare_data(cfg: dict) -> None:
         smiles_col = _find_smiles_col(list(df.columns))
         found, skipped = 0, 0
 
-        for row_idx in range(len(df)):
-            row = df.iloc[row_idx]
-            image_path: Optional[str] = None
+        if data_mode == "dynamic":
+            from concurrent.futures import ProcessPoolExecutor
 
-            if data_mode == "pre_rendered":
-                img_dir = ts.get("pre_rendered_image_dir", "")
+            style_dict = _build_style_config_dict(ts)
+            style = style_dict["render_style"]
+            csv_stem = Path(csv_path).stem
+            dynamic_img_dir = str(output_dir / f"dynamic_{csv_stem}_{style}")
+            os.makedirs(dynamic_img_dir, exist_ok=True)
+
+            tasks = []
+            for row_idx in range(len(df)):
+                row = df.iloc[row_idx]
+                smiles_val = str(row[smiles_col]).strip()
                 sid = _resolve_sample_id(row, row_idx)
-                raw = os.path.join(img_dir, f"{sid}.png")
-                image_path = _resolve_with_alt_ext(raw)
+                img_out = os.path.join(dynamic_img_dir, f"{sid}.png")
+                tasks.append((sid, smiles_val, img_out))
 
-            elif data_mode == "realistic":
-                img_root = ts.get("realistic_image_root", "")
-                if "file_path" in row.index:
-                    rel = str(row["file_path"]).strip()
-                    raw = rel if os.path.isabs(rel) else os.path.join(img_root, rel)
+            n_workers = max(1, num_workers)
+            print(f"  [dynamic] Rendering {len(tasks)} images with "
+                  f"{n_workers} workers, style={style}, output={dynamic_img_dir}")
+
+            err_shown = 0
+            if n_workers == 1:
+                _init_render_worker(style_dict)
+                for task in tasks:
+                    result = _render_one(task)
+                    if result["ok"]:
+                        all_rows.append({
+                            "image_path": result["image_path"],
+                            "ground_truth": result["smiles"],
+                        })
+                        found += 1
+                        if found % 2000 == 0:
+                            print(f"    rendered {found}/{len(tasks)} ...")
+                    else:
+                        if err_shown < 5:
+                            print(f"    render failed ({result['sid']}): {result.get('err', '')}")
+                            err_shown += 1
+                        skipped += 1
+            else:
+                with ProcessPoolExecutor(
+                    max_workers=n_workers,
+                    initializer=_init_render_worker,
+                    initargs=(style_dict,),
+                ) as pool:
+                    for result in pool.map(_render_one, tasks, chunksize=32):
+                        if result["ok"]:
+                            all_rows.append({
+                                "image_path": result["image_path"],
+                                "ground_truth": result["smiles"],
+                            })
+                            found += 1
+                            if found % 2000 == 0:
+                                print(f"    rendered {found}/{len(tasks)} ...")
+                        else:
+                            if err_shown < 5:
+                                print(f"    render failed ({result['sid']}): {result.get('err', '')}")
+                                err_shown += 1
+                            skipped += 1
+
+        else:
+            for row_idx in range(len(df)):
+                row = df.iloc[row_idx]
+                image_path: Optional[str] = None
+
+                if data_mode == "pre_rendered":
+                    img_dir = ts.get("pre_rendered_image_dir", "")
+                    sid = _resolve_sample_id(row, row_idx)
+                    raw = os.path.join(img_dir, f"{sid}.png")
                     image_path = _resolve_with_alt_ext(raw)
 
-            elif data_mode == "dynamic":
-                print(
-                    "Warning: dynamic mode requires chemseek-ocr env with rdkit renderer. "
-                    "Please pre-render images first, then use pre_rendered mode."
-                )
-                continue
+                elif data_mode == "realistic":
+                    img_root = ts.get("realistic_image_root", "")
+                    if "file_path" in row.index:
+                        rel = str(row["file_path"]).strip()
+                        raw = rel if os.path.isabs(rel) else os.path.join(img_root, rel)
+                        image_path = _resolve_with_alt_ext(raw)
 
-            if image_path is None:
-                skipped += 1
-                continue
+                if image_path is None:
+                    skipped += 1
+                    continue
 
-            gold_smiles = str(row[smiles_col])
-            all_rows.append({
-                "image_path": image_path,
-                "ground_truth": gold_smiles,
-            })
-            found += 1
+                gold_smiles = str(row[smiles_col])
+                all_rows.append({
+                    "image_path": image_path,
+                    "ground_truth": gold_smiles,
+                })
+                found += 1
 
         print(f"  [{data_mode}] {csv_path}: found={found}, skipped={skipped}")
 
@@ -236,10 +328,16 @@ def main() -> None:
         default=str(SCRIPT_DIR / "gspo_rl_verl_config.yaml"),
         help="Path to YAML config file",
     )
+    parser.add_argument(
+        "--workers", type=int, default=None,
+        help="Number of parallel workers for dynamic rendering "
+             "(default: from config data.num_workers, or 4)",
+    )
     args = parser.parse_args()
 
     cfg = load_yaml_config(args.config)
-    prepare_data(cfg)
+    n_workers = args.workers or cfg.get("data", {}).get("num_workers", 4)
+    prepare_data(cfg, num_workers=n_workers)
 
 
 if __name__ == "__main__":

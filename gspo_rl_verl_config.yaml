@@ -19,21 +19,27 @@ model:
 data:
   output_dir: ./verl_data
   instruction: "<image>\n Give me the SMILES of the molecule. "
-  max_prompt_length: 4096
+  max_prompt_length: 2048
   max_response_length: 128
 
   train_sets:
     - train_csv: ./training_data/pubchem/train_200k.csv
-      data_mode: pre_rendered
+      data_mode: dynamic
       pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
+      style: molscribe_default # molscribe_default / chemdraw_like
+      mol_augment: true
+      include_condensed: false
       sample_num: 32000
 
     - train_csv: ./training_data/pubchem/train_200k.csv
-      data_mode: pre_rendered
+      data_mode: dynamic
       pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
+      style: chemdraw_like # molscribe_default / chemdraw_like
+      mol_augment: false
+      include_condensed: false
       sample_num: 32000
 
-    - train_csv: ./training_data/uspto_mol/train_200k.csv
+    - train_csv: ./training_data/uspto_mol/train_680k.csv
       data_mode: realistic
       realistic_image_root: ./training_data
       sample_num: 32000
@@ -44,19 +50,21 @@ data:
 training:
   seed: 3407
   total_epochs: 10
-  train_batch_size: 16
+  train_batch_size: 8
   ppo_mini_batch_size: 8
-  ppo_micro_batch_size_per_gpu: 2
+  ppo_micro_batch_size_per_gpu: 1
   learning_rate: 0.000001
   weight_decay: 0.1
   clip_grad: 1.0
   allow_tf32: true
+  memory_safe_mode: true
+  actor_token_len_multiplier: 1.0
 
 # ---------------------------------------------------------------------------
 # GSPO – tight symmetric clipping instead of KL
 # ---------------------------------------------------------------------------
 gspo:
-  group_size: 8
+  group_size: 4
   clip_ratio_low: 3.0e-4
   clip_ratio_high: 4.0e-4
   clip_ratio_c: 10.0
@@ -80,8 +88,8 @@ chiral_no_annotation_reward: 0.0
 # GPU / Hardware  (4x RTX 6000 Ada 48 GB)
 # ---------------------------------------------------------------------------
 gpu:
-  n_gpus_per_node: 4
-  gpu_ids: "0,1,2,3"
+  n_gpus_per_node: 2
+  gpu_ids: "1,2"
   tensor_model_parallel_size: 2
   gpu_memory_utilization: 0.5
   param_offload: false
@@ -96,7 +104,7 @@ save_freq: 50
 test_freq: 5
 
 wandb:
-  enabled: true
+  enabled: false
   project: ChemSeek-OCR
-  run_name: gspo-verl-4gpu
+  run_name: gspo-verl-2gpu
   api_key: null
