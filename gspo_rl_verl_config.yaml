@@ -51,9 +51,9 @@ training:
   seed: 3407
   total_epochs: 10
   train_batch_size: 8
-  ppo_mini_batch_size: 8
+  ppo_mini_batch_size: 4
   ppo_micro_batch_size_per_gpu: 1
-  learning_rate: 0.000001
+  learning_rate: 0.00001
   weight_decay: 0.1
   clip_grad: 1.0
   allow_tf32: true
@@ -91,7 +91,7 @@ gpu:
   n_gpus_per_node: 2
   gpu_ids: "1,2"
   tensor_model_parallel_size: 2
-  gpu_memory_utilization: 0.5
+  gpu_memory_utilization: 0.4
   param_offload: false
   optimizer_offload: false
   ref_param_offload: true
