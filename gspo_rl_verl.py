@@ -60,6 +60,9 @@ def load_yaml_config(path: str) -> dict:
     cfg["data"]["output_dir"] = _resolve_path(
         cfg["data"].get("output_dir", "./verl_data"), base
     )
+    cfg.setdefault("validation", {})
+    if cfg["validation"].get("val_parquet"):
+        cfg["validation"]["val_parquet"] = _resolve_path(cfg["validation"]["val_parquet"], base)
     return cfg
 
 
@@ -615,12 +618,13 @@ def train(cfg: dict, config_path: str) -> None:
     gpu_cfg = cfg.get("gpu", {})
     rw_cfg = cfg.get("reward_weights", {})
     wandb_cfg = cfg.get("wandb", {})
+    val_cfg = cfg.get("validation", {})
     output_dir = cfg.get("output_dir", str(SCRIPT_DIR / "weight_gspo_rl_verl"))
     _ensure_local_checkpoint_compat(str(model_cfg.get("path", "")))
 
     data_dir = Path(data_cfg["output_dir"])
     train_parquet = data_dir / "train.parquet"
-    val_parquet = data_dir / "val.parquet"
+    val_parquet = Path(val_cfg.get("val_parquet") or (data_dir / "val.parquet"))
 
     if not train_parquet.is_file():
         print(f"Error: Training data not found at {train_parquet}")
@@ -697,7 +701,19 @@ def train(cfg: dict, config_path: str) -> None:
     lr = train_cfg.get("learning_rate", 1e-6)
     epochs = train_cfg.get("total_epochs", 10)
     save_freq = cfg.get("save_freq", 50)
-    test_freq = cfg.get("test_freq", 5)
+    validation_enabled = bool(val_cfg.get("enabled", True))
+    test_freq = int(val_cfg.get("test_freq", cfg.get("test_freq", 5))) if validation_enabled else -1
+    val_before_train = bool(val_cfg.get("val_before_train", False)) if validation_enabled else False
+
+    if validation_enabled:
+        if not val_parquet.is_file():
+            print(f"Error: Validation data not found at {val_parquet}")
+            print("Either prepare val parquet, set validation.val_parquet, or set validation.enabled=false.")
+            sys.exit(1)
+        val_file_for_cmd = val_parquet
+    else:
+        # Keep a valid file path even when validation is disabled; trainer won't evaluate when test_freq=-1.
+        val_file_for_cmd = train_parquet
 
     max_prompt_len = data_cfg.get("max_prompt_length", 4096)
     max_resp_len = data_cfg.get("max_response_length", 128)
@@ -768,7 +784,7 @@ def train(cfg: dict, config_path: str) -> None:
         f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={micro_bs}",
         # Data
         f"data.train_files={train_parquet}",
-        f"data.val_files={val_parquet}",
+        f"data.val_files={val_file_for_cmd}",
         f"data.train_batch_size={train_batch}",
         f"data.max_prompt_length={max_prompt_len}",
         f"data.max_response_length={max_resp_len}",
@@ -801,7 +817,7 @@ def train(cfg: dict, config_path: str) -> None:
         f"trainer.test_freq={test_freq}",
         f"trainer.total_epochs={epochs}",
         f"trainer.default_local_dir={output_dir}",
-        "trainer.val_before_train=False",
+        f"trainer.val_before_train={val_before_train}",
     ]
 
     env = os.environ.copy()
@@ -845,6 +861,8 @@ def train(cfg: dict, config_path: str) -> None:
     print(f"Batch size:       {train_batch}")
     print(f"LR:               {lr}")
     print(f"Epochs:           {epochs}")
+    print(f"Validation:       {validation_enabled} (test_freq={test_freq})")
+    print(f"Val data:         {val_file_for_cmd}")
     print(f"GSPO clip_low:    {clip_ratio_low}")
     print(f"GSPO clip_high:   {clip_ratio_high}")
     print(f"GSPO clip_c:      {clip_ratio_c}")

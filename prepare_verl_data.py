@@ -71,6 +71,12 @@ def load_yaml_config(path: str) -> dict:
     cfg["data"]["output_dir"] = _resolve_path(
         cfg["data"].get("output_dir", "./verl_data"), base
     )
+    save_cfg = cfg["data"].get("save", {}) or {}
+    if save_cfg.get("train_file"):
+        save_cfg["train_file"] = _resolve_path(save_cfg["train_file"], base)
+    if save_cfg.get("val_file"):
+        save_cfg["val_file"] = _resolve_path(save_cfg["val_file"], base)
+    cfg["data"]["save"] = save_cfg
     return cfg
 
 
@@ -158,6 +164,11 @@ def prepare_data(cfg: dict, num_workers: int = 1) -> None:
 
     output_dir = Path(cfg["data"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+    save_cfg = cfg.get("data", {}).get("save", {}) or {}
+    train_path = Path(save_cfg.get("train_file") or (output_dir / "train.parquet"))
+    val_path = Path(save_cfg.get("val_file") or (output_dir / "val.parquet"))
+    train_path.parent.mkdir(parents=True, exist_ok=True)
+    val_path.parent.mkdir(parents=True, exist_ok=True)
     seed = cfg.get("training", {}).get("seed", 3407)
     instruction = cfg.get("data", {}).get(
         "instruction", "<image>\n Give me the SMILES of the molecule. "
@@ -279,7 +290,22 @@ def prepare_data(cfg: dict, num_workers: int = 1) -> None:
     data_sources = []
     ground_truths = []
 
-    for r in all_rows:
+    data_cfg = cfg.get("data", {})
+    val_split_cfg = data_cfg.get("val_split", {})
+    val_split_enabled = bool(val_split_cfg.get("enabled", True))
+    val_ratio = float(val_split_cfg.get("ratio", 0.02))
+    val_min_samples = int(val_split_cfg.get("min_samples", 100))
+
+    if val_split_enabled and len(all_rows) > 1:
+        n_val = max(val_min_samples, int(len(all_rows) * val_ratio))
+        n_val = min(n_val, len(all_rows) - 1)
+        train_rows = all_rows[:-n_val]
+        val_rows = all_rows[-n_val:]
+    else:
+        train_rows = all_rows
+        val_rows = []
+
+    for r in train_rows:
         prompts.append(json.dumps(
             [{"role": "user", "content": instruction}]
         ))
@@ -297,22 +323,24 @@ def prepare_data(cfg: dict, num_workers: int = 1) -> None:
         "reward_model": ground_truths,
     })
 
-    train_path = output_dir / "train.parquet"
     pq.write_table(table, str(train_path))
 
-    n_val = max(100, len(all_rows) // 50)
-    val_rows = all_rows[-n_val:]
-    val_table = pa.table({
-        "prompt": [json.dumps([{"role": "user", "content": instruction}]) for _ in val_rows],
-        "image_path": [r["image_path"] for r in val_rows],
-        "data_source": ["chemseek_ocr"] * len(val_rows),
-        "reward_model": [json.dumps({"ground_truth": r["ground_truth"]}) for r in val_rows],
-    })
-    val_path = output_dir / "val.parquet"
-    pq.write_table(val_table, str(val_path))
-
-    print(f"Saved {len(all_rows)} train samples to {train_path}")
-    print(f"Saved {len(val_rows)} val samples to {val_path}")
+    if val_rows:
+        val_table = pa.table({
+            "prompt": [json.dumps([{"role": "user", "content": instruction}]) for _ in val_rows],
+            "image_path": [r["image_path"] for r in val_rows],
+            "data_source": ["chemseek_ocr"] * len(val_rows),
+            "reward_model": [json.dumps({"ground_truth": r["ground_truth"]}) for r in val_rows],
+        })
+        pq.write_table(val_table, str(val_path))
+        print(
+            f"Saved {len(train_rows)} train samples to {train_path}; "
+            f"{len(val_rows)} val samples to {val_path} (ratio={val_ratio})"
+        )
+    else:
+        if val_path.exists():
+            val_path.unlink()
+        print(f"Saved {len(train_rows)} train samples to {train_path}; validation split disabled")
 
 
 # =========================================================================

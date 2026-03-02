@@ -203,4 +203,4 @@ restart:
 wandb: false
 wandb_project: ChemSeek-OCR
 wandb_run_name: test_for_rl
-wandb_api_key: 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
+wandb_api_key: null

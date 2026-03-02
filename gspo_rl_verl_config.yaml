@@ -18,9 +18,16 @@ model:
 # ---------------------------------------------------------------------------
 data:
   output_dir: ./verl_data
+  save:
+    train_file: ./verl_data/train.parquet
+    val_file: ./verl_data/val.parquet
   instruction: "<image>\n Give me the SMILES of the molecule. "
   max_prompt_length: 2048
   max_response_length: 128
+  val_split:
+    enabled: false
+    ratio: 0.02
+    min_samples: 100
 
   train_sets:
     - train_csv: ./training_data/pubchem/train_200k.csv
@@ -29,7 +36,7 @@ data:
       style: molscribe_default # molscribe_default / chemdraw_like
       mol_augment: true
       include_condensed: false
-      sample_num: 32000
+      sample_num: 3200
 
     - train_csv: ./training_data/pubchem/train_200k.csv
       data_mode: dynamic
@@ -37,12 +44,12 @@ data:
       style: chemdraw_like # molscribe_default / chemdraw_like
       mol_augment: false
       include_condensed: false
-      sample_num: 32000
+      sample_num: 3200
 
     - train_csv: ./training_data/uspto_mol/train_680k.csv
       data_mode: realistic
       realistic_image_root: ./training_data
-      sample_num: 32000
+      sample_num: 3200
 
 # ---------------------------------------------------------------------------
 # Training
@@ -102,6 +109,11 @@ gpu:
 output_dir: ./weight_gspo_rl_verl
 save_freq: 50
 test_freq: 5
+validation:
+  enabled: false
+  val_parquet: null
+  test_freq: 5
+  val_before_train: false
 
 wandb:
   enabled: false
