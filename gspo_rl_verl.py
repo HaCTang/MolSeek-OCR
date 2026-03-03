@@ -141,11 +141,12 @@ def _extract_smiles_candidate(text: str) -> str:
     raw = str(text).strip()
     if not raw:
         return ""
-    line = raw.splitlines()[0].strip()
-    if line.startswith("```"):
-        line = line.strip("`").strip()
-    line = line.replace(" ", "")
-    return line
+    # SFT target is plain SMILES output, so keep extraction simple and direct.
+    for line in raw.splitlines():
+        line = line.strip()
+        if line:
+            return line.replace(" ", "")
+    return ""
 
 
 def _replace_empty(s: Optional[str]) -> str:
@@ -693,11 +694,17 @@ def train(cfg: dict, config_path: str) -> None:
 
     n_gpus = gpu_cfg.get("n_gpus_per_node", 4)
     tp_size = gpu_cfg.get("tensor_model_parallel_size", 2)
-    gpu_mem_util = gpu_cfg.get("gpu_memory_utilization", 0.5)
+    gpu_mem_util = gpu_cfg.get("vllm_gpu_memory_utilization", 0.5)
     vllm_architecture = str(model_cfg.get("vllm_architecture", "DeepseekOCR2ForCausalLM"))
     enable_grad_ckpt = bool(model_cfg.get("enable_gradient_checkpointing", True))
     attn_impl = str(model_cfg.get("attn_implementation", "flash_attention_2"))
     use_fused_kernels = bool(model_cfg.get("use_fused_kernels", False))
+    if use_fused_kernels and "deepseekocr2" in vllm_architecture.lower():
+        print(
+            "[compat] DeepseekOCR2 is incompatible with verl fused-kernel forward path "
+            "(unexpected cache_position kwarg). Auto-disable use_fused_kernels."
+        )
+        use_fused_kernels = False
     vllm_code_dir = model_cfg.get("vllm_code_dir")
     if vllm_code_dir:
         vllm_code_dir = _resolve_path(vllm_code_dir, Path(config_path).resolve().parent)
@@ -717,18 +724,6 @@ def train(cfg: dict, config_path: str) -> None:
     mini_bs = train_cfg.get("ppo_mini_batch_size", train_batch)
 
     group_size = gspo_cfg.get("group_size", 8)
-
-    # Memory-safe defaults for 48GB GPUs with DeepSeek-OCR2 full-parameter RL.
-    if train_cfg.get("memory_safe_mode", True):
-        if micro_bs > 1:
-            print(f"[memory-safe] ppo_micro_batch_size_per_gpu {micro_bs} -> 1")
-            micro_bs = 1
-        if train_batch > 8:
-            print(f"[memory-safe] train_batch_size {train_batch} -> 8")
-            train_batch = 8
-        if mini_bs > train_batch:
-            print(f"[memory-safe] ppo_mini_batch_size {mini_bs} -> {train_batch}")
-            mini_bs = train_batch
 
     # verl normalizes: effective = mini_bs * group_size // n_gpus
     # it must be divisible by micro_bs
@@ -778,9 +773,6 @@ def train(cfg: dict, config_path: str) -> None:
 
     max_prompt_len = data_cfg.get("max_prompt_length", 4096)
     max_resp_len = data_cfg.get("max_response_length", 128)
-    if train_cfg.get("memory_safe_mode", True) and max_prompt_len > 2048:
-        print(f"[memory-safe] max_prompt_length {max_prompt_len} -> 2048")
-        max_prompt_len = 2048
 
     token_multiplier = float(train_cfg.get("actor_token_len_multiplier", 1.0))
     actor_max_token_len_per_gpu = int((max_prompt_len + max_resp_len) * token_multiplier)
