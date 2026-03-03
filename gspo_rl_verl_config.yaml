@@ -12,6 +12,9 @@
 model:
   path: ./weight_progressive_sft/checkpoint-400
   trust_remote_code: true
+  enable_gradient_checkpointing: true
+  attn_implementation: flash_attention_2
+  use_fused_kernels: true
 
 # ---------------------------------------------------------------------------
 # Data  (CSV -> parquet, run "prepare-data" first)
@@ -56,13 +59,14 @@ data:
 # ---------------------------------------------------------------------------
 training:
   seed: 3407
-  total_epochs: 10
+  total_epochs: 1
   train_batch_size: 8
-  ppo_mini_batch_size: 4
-  ppo_micro_batch_size_per_gpu: 1
+  ppo_mini_batch_size: 8
+  ppo_micro_batch_size_per_gpu: 2
   learning_rate: 0.00001
   weight_decay: 0.1
   clip_grad: 1.0
+  gradient_precision: fp32
   allow_tf32: true
   memory_safe_mode: true
   actor_token_len_multiplier: 1.0
@@ -98,17 +102,17 @@ gpu:
   n_gpus_per_node: 2
   gpu_ids: "1,2"
   tensor_model_parallel_size: 2
-  gpu_memory_utilization: 0.4
+  gpu_memory_utilization: 0.3
   param_offload: false
   optimizer_offload: false
   ref_param_offload: true
+  fsdp_model_dtype: bf16
 
 # ---------------------------------------------------------------------------
 # Saving / Logging
 # ---------------------------------------------------------------------------
 output_dir: ./weight_gspo_rl_verl
 save_freq: 50
-test_freq: 5
 validation:
   enabled: false
   val_parquet: null

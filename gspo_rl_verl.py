@@ -20,6 +20,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,63 @@ from typing import Any, Dict, Optional
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _run_with_live_reward_tqdm(cmd: list[str], env: dict) -> int:
+    """Run trainer command and stream per-step reward with tqdm."""
+    try:
+        from tqdm import tqdm
+    except Exception:
+        tqdm = None
+
+    step_reward_re = re.compile(
+        r"step:(?P<step>\d+).*?critic/rewards/mean:(?P<reward>[-+0-9.eE]+)"
+    )
+    total_step_re = re.compile(r"Training Progress:\s*\d+%\|.*?\|\s*(\d+)/(\d+)")
+
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    pbar = None
+    last_step = 0
+
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        print(line, end="")
+
+        total_match = total_step_re.search(line)
+        if total_match and tqdm is not None and pbar is None:
+            total_steps = int(total_match.group(2))
+            pbar = tqdm(
+                total=total_steps,
+                desc="GSPO Reward",
+                unit="step",
+                dynamic_ncols=True,
+                leave=True,
+            )
+
+        reward_match = step_reward_re.search(line)
+        if reward_match:
+            step = int(reward_match.group("step"))
+            reward = float(reward_match.group("reward"))
+            if pbar is not None:
+                if step > last_step:
+                    pbar.update(step - last_step)
+                pbar.set_postfix_str(f"reward={reward:.6f}")
+            else:
+                print(f"[reward] step={step} reward={reward:.6f}")
+            last_step = max(last_step, step)
+
+    retcode = proc.wait()
+    if pbar is not None:
+        pbar.close()
+    return retcode
 
 
 # =========================================================================
@@ -637,6 +695,9 @@ def train(cfg: dict, config_path: str) -> None:
     tp_size = gpu_cfg.get("tensor_model_parallel_size", 2)
     gpu_mem_util = gpu_cfg.get("gpu_memory_utilization", 0.5)
     vllm_architecture = str(model_cfg.get("vllm_architecture", "DeepseekOCR2ForCausalLM"))
+    enable_grad_ckpt = bool(model_cfg.get("enable_gradient_checkpointing", True))
+    attn_impl = str(model_cfg.get("attn_implementation", "flash_attention_2"))
+    use_fused_kernels = bool(model_cfg.get("use_fused_kernels", False))
     vllm_code_dir = model_cfg.get("vllm_code_dir")
     if vllm_code_dir:
         vllm_code_dir = _resolve_path(vllm_code_dir, Path(config_path).resolve().parent)
@@ -727,6 +788,8 @@ def train(cfg: dict, config_path: str) -> None:
     param_offload = str(gpu_cfg.get("param_offload", False))
     optim_offload = str(gpu_cfg.get("optimizer_offload", False))
     ref_offload = str(gpu_cfg.get("ref_param_offload", True))
+    fsdp_model_dtype = str(gpu_cfg.get("fsdp_model_dtype", "bf16"))
+    gradient_precision = str(train_cfg.get("gradient_precision", "fp32"))
 
     logger_list = '["console"]'
     if wandb_cfg.get("enabled", False):
@@ -742,7 +805,9 @@ def train(cfg: dict, config_path: str) -> None:
         # Model
         f"actor_rollout_ref.model.path={model_cfg['path']}",
         "actor_rollout_ref.model.trust_remote_code=True",
-        "actor_rollout_ref.model.enable_gradient_checkpointing=True",
+        f"actor_rollout_ref.model.enable_gradient_checkpointing={enable_grad_ckpt}",
+        f"++actor_rollout_ref.model.override_config.attn_implementation={attn_impl}",
+        f"actor_rollout_ref.model.use_fused_kernels={use_fused_kernels}",
         "actor_rollout_ref.model.external_lib=vllm_deepseekocr2_patch",
         # Actor – GSPO-specific parameters
         f"actor_rollout_ref.actor.optim.lr={lr}",
@@ -764,6 +829,10 @@ def train(cfg: dict, config_path: str) -> None:
         "actor_rollout_ref.actor.freeze_vision_tower=True",
         f"actor_rollout_ref.actor.fsdp_config.param_offload={param_offload}",
         f"actor_rollout_ref.actor.fsdp_config.optimizer_offload={optim_offload}",
+        f"actor_rollout_ref.actor.fsdp_config.model_dtype={fsdp_model_dtype}",
+        f"+actor_rollout_ref.actor.fsdp_config.mixed_precision.param_dtype={fsdp_model_dtype}",
+        f"+actor_rollout_ref.actor.fsdp_config.mixed_precision.reduce_dtype={gradient_precision}",
+        f"+actor_rollout_ref.actor.fsdp_config.mixed_precision.buffer_dtype={gradient_precision}",
         # Rollout (vLLM)
         "actor_rollout_ref.rollout.name=vllm",
         f"++actor_rollout_ref.rollout.engine_kwargs.vllm.hf_overrides.architectures=[\"{vllm_architecture}\"]",
@@ -781,6 +850,10 @@ def train(cfg: dict, config_path: str) -> None:
         f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={micro_bs}",
         # Reference model
         f"actor_rollout_ref.ref.fsdp_config.param_offload={ref_offload}",
+        f"actor_rollout_ref.ref.fsdp_config.model_dtype={fsdp_model_dtype}",
+        f"+actor_rollout_ref.ref.fsdp_config.mixed_precision.param_dtype={fsdp_model_dtype}",
+        f"+actor_rollout_ref.ref.fsdp_config.mixed_precision.reduce_dtype={gradient_precision}",
+        f"+actor_rollout_ref.ref.fsdp_config.mixed_precision.buffer_dtype={gradient_precision}",
         f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={micro_bs}",
         # Data
         f"data.train_files={train_parquet}",
@@ -875,8 +948,8 @@ def train(cfg: dict, config_path: str) -> None:
     print("    " + " \\\n    ".join(cmd[3:]))
     print("=" * 72)
 
-    result = subprocess.run(cmd, env=env)
-    sys.exit(result.returncode)
+    retcode = _run_with_live_reward_tqdm(cmd, env)
+    sys.exit(retcode)
 
 
 # =========================================================================
