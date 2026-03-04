@@ -89,10 +89,15 @@ gspo:
 reward_weights:
   validity: 2.0
   tanimoto: 2.0
-  canon_smiles: 0.0
+  canon_smiles: 1.0
   graph: 2.0
-  chiral: 0.0
+  chiral: 1.0
 chiral_no_annotation_reward: 0.0
+reward_debug:
+  enabled: true
+  every_n: 5
+  max_prints: 3000
+  only_invalid: false
 
 # ---------------------------------------------------------------------------
 # GPU / Hardware  (4x RTX 6000 Ada 48 GB)

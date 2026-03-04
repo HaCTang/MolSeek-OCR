@@ -153,10 +153,10 @@ batch_size: 4
 grad_accum: 8
 learning_rate: 0.0002
 weight_decay: 0.001
-warmup_steps: 50
-max_steps: 200
+warmup_steps: 100
+max_steps: 1500
 epochs: 0.0
-save_steps: 100
+save_steps: 300
 optim: adamw_torch_fused
 allow_tf32: true
 enable_gradient_checkpointing: true
@@ -200,7 +200,7 @@ restart:
   auto_resume_from_latest_checkpoint: true
   resume_from_checkpoint: null
   wandb_resume_same_run: true
-wandb: false
+wandb: true
 wandb_project: ChemSeek-OCR
-wandb_run_name: test_for_rl
+wandb_run_name: lora-sft-3X32k-1epoch-lr0.0002
 wandb_api_key: null

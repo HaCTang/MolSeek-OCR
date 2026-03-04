@@ -20,6 +20,7 @@ SMILES_CANDIDATE_COLUMNS = ("SMILES", "smiles", "canonical_smiles")
 ID_CANDIDATE_COLUMNS = ("Unnamed: 0", "id", "idx", "index", "image_id", "pubchem_cid")
 
 _WORKER_RENDERER = None
+_RENDER_SKIP_STATS = {"skipped": 0, "fallback": 0}
 
 
 def _ensure_list(value: Union[str, Sequence[str]]) -> List[str]:
@@ -586,16 +587,14 @@ class ChemConversationDataset(Dataset):
         self.instruction = instruction
         self.renderer = MoleculeStyleRenderer(style_config or MoleculeStyleConfig())
         self.use_rendered_smiles_as_label = use_rendered_smiles_as_label
+        self.max_render_retries = 8
+        self.render_error_log_every = 50
 
     def __len__(self) -> int:
         return len(self.df)
 
-    def __getitem__(self, idx: int) -> Dict:
+    def _build_item(self, idx: int, input_smiles: str, target_smiles: str, image: Image.Image) -> Dict:
         row = self.df.iloc[idx]
-        input_smiles = str(row[self.smiles_col])
-        image, rendered_smiles = self.renderer.render(input_smiles)
-        target_smiles = rendered_smiles if self.use_rendered_smiles_as_label else input_smiles
-
         return {
             "messages": [
                 {
@@ -615,6 +614,43 @@ class ChemConversationDataset(Dataset):
                 "source_csv": row.get("source_csv", ""),
             },
         }
+
+    def __getitem__(self, idx: int) -> Dict:
+        total = len(self.df)
+        if total <= 0:
+            raise IndexError("Dataset is empty.")
+
+        # Retry nearby samples when rendering fails (e.g., bad geometry / invalid edge cases).
+        for offset in range(self.max_render_retries + 1):
+            try:
+                try_idx = (idx + offset) % total
+                row = self.df.iloc[try_idx]
+                input_smiles = str(row[self.smiles_col]).strip()
+                if not input_smiles:
+                    raise ValueError("Empty SMILES.")
+                image, rendered_smiles = self.renderer.render(input_smiles)
+                target_smiles = rendered_smiles if self.use_rendered_smiles_as_label else input_smiles
+                return self._build_item(try_idx, input_smiles, target_smiles, image)
+            except Exception as exc:
+                _RENDER_SKIP_STATS["skipped"] += 1
+                if _RENDER_SKIP_STATS["skipped"] % self.render_error_log_every == 0:
+                    print(
+                        "[dataset] render skip "
+                        f"pid={os.getpid()} skipped={_RENDER_SKIP_STATS['skipped']} "
+                        f"idx={try_idx} err={type(exc).__name__}: {exc}"
+                    )
+
+        # Last-resort fallback to avoid worker crash if many consecutive rows fail.
+        _RENDER_SKIP_STATS["fallback"] += 1
+        if _RENDER_SKIP_STATS["fallback"] % max(1, self.render_error_log_every // 2) == 0:
+            print(
+                "[dataset] render fallback "
+                f"pid={os.getpid()} fallback={_RENDER_SKIP_STATS['fallback']} idx={idx}"
+            )
+        fallback_smiles = "C"
+        image, rendered_smiles = self.renderer._render_with_pil_text(fallback_smiles)
+        target_smiles = rendered_smiles if self.use_rendered_smiles_as_label else fallback_smiles
+        return self._build_item(idx, fallback_smiles, target_smiles, image)
 
 
 def build_chem_conversation_dataset(

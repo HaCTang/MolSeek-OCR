@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+_REWARD_DEBUG_STATE = {"calls": 0, "prints": 0}
 
 
 def _run_with_live_reward_tqdm(cmd: list[str], env: dict) -> int:
@@ -141,7 +142,6 @@ def _extract_smiles_candidate(text: str) -> str:
     raw = str(text).strip()
     if not raw:
         return ""
-    # SFT target is plain SMILES output, so keep extraction simple and direct.
     for line in raw.splitlines():
         line = line.strip()
         if line:
@@ -151,6 +151,23 @@ def _extract_smiles_candidate(text: str) -> str:
 
 def _replace_empty(s: Optional[str]) -> str:
     return s if isinstance(s, str) and s != "" else "<empty>"
+
+
+def _to_bool(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    if isinstance(v, str):
+        return v.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(v)
+
+
+def _shorten_text(s: str, max_len: int = 120) -> str:
+    s = (s or "").replace("\n", "\\n")
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3] + "..."
 
 
 def _canonicalize_smiles(
@@ -251,7 +268,39 @@ def compute_score(
         + w_chiral * components["chiral"]
     )
     w_total = w_validity + w_tanimoto + w_canon + w_graph + w_chiral
-    return float(weighted_sum / w_total) if w_total > 0 else 0.0
+    score = float(weighted_sum / w_total) if w_total > 0 else 0.0
+
+    debug_enabled = _to_bool(kwargs.get("reward_debug", False))
+    if debug_enabled:
+        _REWARD_DEBUG_STATE["calls"] += 1
+        every_n = max(1, int(kwargs.get("reward_debug_every_n", 1)))
+        max_prints = max(0, int(kwargs.get("reward_debug_max_prints", 2000)))
+        only_invalid = _to_bool(kwargs.get("reward_debug_only_invalid", False))
+        should_print = (_REWARD_DEBUG_STATE["calls"] % every_n == 0)
+        if only_invalid:
+            should_print = should_print and components["validity"] < 0.5
+        if max_prints > 0:
+            should_print = should_print and (_REWARD_DEBUG_STATE["prints"] < max_prints)
+
+        if should_print:
+            _REWARD_DEBUG_STATE["prints"] += 1
+            print(
+                "[reward-debug] "
+                f"pid={os.getpid()} "
+                f"call={_REWARD_DEBUG_STATE['calls']} "
+                f"source={data_source} "
+                f"pred_valid={int(components['validity'])} "
+                f"tanimoto={components['tanimoto']:.4f} "
+                f"canon={components['canon_smiles']:.0f} "
+                f"graph={components['graph']:.0f} "
+                f"chiral={components['chiral']:.4f} "
+                f"weights(v,t,c,g,h)=({w_validity:.2f},{w_tanimoto:.2f},{w_canon:.2f},{w_graph:.2f},{w_chiral:.2f}) "
+                f"score={score:.6f} "
+                f"gold={_shorten_text(gold_smiles)} "
+                f"pred={_shorten_text(pred_smiles)}"
+            )
+
+    return score
 
 
 # =========================================================================
@@ -676,6 +725,7 @@ def train(cfg: dict, config_path: str) -> None:
     gspo_cfg = cfg.get("gspo", {})
     gpu_cfg = cfg.get("gpu", {})
     rw_cfg = cfg.get("reward_weights", {})
+    reward_debug_cfg = cfg.get("reward_debug", {})
     wandb_cfg = cfg.get("wandb", {})
     val_cfg = cfg.get("validation", {})
     output_dir = cfg.get("output_dir", str(SCRIPT_DIR / "weight_gspo_rl_verl"))
@@ -871,6 +921,10 @@ def train(cfg: dict, config_path: str) -> None:
         f"+custom_reward_function.reward_kwargs.reward_weights.graph={rw_cfg.get('graph', 1.5)}",
         f"+custom_reward_function.reward_kwargs.reward_weights.chiral={rw_cfg.get('chiral', 1.5)}",
         f"+custom_reward_function.reward_kwargs.chiral_no_annotation_reward={cfg.get('chiral_no_annotation_reward', 1.0)}",
+        f"+custom_reward_function.reward_kwargs.reward_debug={bool(reward_debug_cfg.get('enabled', False))}",
+        f"+custom_reward_function.reward_kwargs.reward_debug_every_n={int(reward_debug_cfg.get('every_n', 1))}",
+        f"+custom_reward_function.reward_kwargs.reward_debug_max_prints={int(reward_debug_cfg.get('max_prints', 2000))}",
+        f"+custom_reward_function.reward_kwargs.reward_debug_only_invalid={bool(reward_debug_cfg.get('only_invalid', False))}",
         # Trainer
         "trainer.critic_warmup=0",
         f"trainer.logger={logger_list}",
@@ -933,6 +987,13 @@ def train(cfg: dict, config_path: str) -> None:
     print(f"GSPO clip_c:      {clip_ratio_c}")
     print(f"Loss agg mode:    {loss_agg_mode}")
     print(f"KL loss:          {use_kl_loss} (coef={kl_coef})")
+    print(
+        "Reward debug:     "
+        f"{bool(reward_debug_cfg.get('enabled', False))} "
+        f"(every_n={int(reward_debug_cfg.get('every_n', 1))}, "
+        f"max_prints={int(reward_debug_cfg.get('max_prints', 2000))}, "
+        f"only_invalid={bool(reward_debug_cfg.get('only_invalid', False))})"
+    )
     print(f"Output:           {output_dir}")
     print("=" * 72)
     print("Command:")
