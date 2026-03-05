@@ -154,7 +154,7 @@ grad_accum: 8
 learning_rate: 0.0002
 weight_decay: 0.001
 warmup_steps: 100
-max_steps: 1500
+max_steps: 3000
 epochs: 0.0
 save_steps: 300
 optim: adamw_torch_fused
@@ -195,12 +195,12 @@ train_on_responses_only: true
 log_train_accuracy: true
 train_accuracy_log_steps: 20
 restart:
-  enable: false
-  dir: ./weight
+  enable: true
+  dir: ./weight_lora_sft
   auto_resume_from_latest_checkpoint: true
   resume_from_checkpoint: null
   wandb_resume_same_run: true
 wandb: true
 wandb_project: ChemSeek-OCR
 wandb_run_name: lora-sft-3X32k-1epoch-lr0.0002
-wandb_api_key: null
+wandb_api_key: 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
