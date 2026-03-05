@@ -103,7 +103,13 @@ val_sets:
 seed: 3407
 batch_size: 4
 grad_accum: 8
-learning_rate: 0.00001
+# learning_rate: 0.00001
+# Optional split learning rates:
+# - vision_learning_rate controls `model.sam_model` and `model.projector`
+# - language_learning_rate controls the language model blocks (e.g. `model.layers`)
+# If null, fallback to `learning_rate`.
+vision_learning_rate: 0.00002
+language_learning_rate: 0.000005
 weight_decay: 0.001
 warmup_steps: 100
 max_steps: 1500
@@ -126,8 +132,24 @@ ddp_backend: nccl
 ddp_timeout_seconds: 1800
 use_accelerate: true
 accelerate_num_processes: 4
-accelerate_gpu_ids: "0,1,2,3"
+accelerate_gpu_ids: "6,7,8,9"
 train_on_responses_only: true
+# Freeze by language layer indices (DeepSeek-OCR-2 has 12 language layers: 0-11).
+# For image->SMILES, freeze lower language layers and keep upper layers trainable.
+freeze_layers: [0, 1, 2, 3, 4, 5, 6, 7]
+# Freeze by module-name substring matching, similar in spirit to LoRA `target_modules`.
+# Here we freeze low-level visual blocks, while keeping visual high-level blocks (8-11)
+# and projector trainable for OCR adaptation.
+freeze_modules:
+  - model.sam_model.patch_embed
+  - model.sam_model.blocks.0
+  - model.sam_model.blocks.1
+  - model.sam_model.blocks.2
+  - model.sam_model.blocks.3
+  - model.sam_model.blocks.4
+  - model.sam_model.blocks.5
+  - model.sam_model.blocks.6
+  - model.sam_model.blocks.7
 log_train_accuracy: true
 train_accuracy_log_steps: 20
 restart:

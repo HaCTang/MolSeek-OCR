@@ -4,7 +4,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Tuple
 
 import torch
 from torch.utils.data import Dataset
@@ -83,6 +83,8 @@ class FullSFTConfig:
     batch_size: int
     grad_accum: int
     learning_rate: float
+    vision_learning_rate: float | None
+    language_learning_rate: float | None
     weight_decay: float
     warmup_steps: int
     max_steps: int
@@ -108,6 +110,8 @@ class FullSFTConfig:
     accelerate_num_processes: int
     accelerate_gpu_ids: str | None
     train_on_responses_only: bool
+    freeze_layers: List[int]
+    freeze_modules: List[str]
     log_train_accuracy: bool
     train_accuracy_log_steps: int
     wandb: bool
@@ -264,6 +268,16 @@ def _validate_config(cfg: FullSFTConfig) -> None:
         raise ValueError("Full fine-tuning does not support load_in_4bit=true. Set load_in_4bit=false.")
     if cfg.train_accuracy_log_steps <= 0:
         raise ValueError("train_accuracy_log_steps must be > 0")
+    if cfg.learning_rate <= 0:
+        raise ValueError("learning_rate must be > 0")
+    if cfg.vision_learning_rate is not None and cfg.vision_learning_rate <= 0:
+        raise ValueError("vision_learning_rate must be > 0 when provided")
+    if cfg.language_learning_rate is not None and cfg.language_learning_rate <= 0:
+        raise ValueError("language_learning_rate must be > 0 when provided")
+    if not isinstance(cfg.freeze_layers, list) or any((not isinstance(i, int) or i < 0) for i in cfg.freeze_layers):
+        raise ValueError("freeze_layers must be a list of non-negative integers")
+    if not isinstance(cfg.freeze_modules, list) or any(not isinstance(m, str) or not m.strip() for m in cfg.freeze_modules):
+        raise ValueError("freeze_modules must be a list of non-empty strings")
 
 
 def load_config(config_path: str) -> FullSFTConfig:
@@ -290,6 +304,16 @@ def load_config(config_path: str) -> FullSFTConfig:
     raw["eval_every_steps"] = raw.get("eval_every_steps", None)
     raw["eval_on_start"] = bool(raw.get("eval_on_start", True))
     raw["eval_on_end"] = bool(raw.get("eval_on_end", True))
+    raw["vision_learning_rate"] = raw.get("vision_learning_rate", None)
+    raw["language_learning_rate"] = raw.get("language_learning_rate", None)
+    if raw["vision_learning_rate"] not in (None, ""):
+        raw["vision_learning_rate"] = float(raw["vision_learning_rate"])
+    else:
+        raw["vision_learning_rate"] = None
+    if raw["language_learning_rate"] not in (None, ""):
+        raw["language_learning_rate"] = float(raw["language_learning_rate"])
+    else:
+        raw["language_learning_rate"] = None
     raw["optim"] = raw.get("optim", "adamw_torch_fused")
     raw["allow_tf32"] = bool(raw.get("allow_tf32", True))
     raw["enable_gradient_checkpointing"] = bool(raw.get("enable_gradient_checkpointing", False))
@@ -304,6 +328,8 @@ def load_config(config_path: str) -> FullSFTConfig:
     raw["accelerate_gpu_ids"] = raw.get("accelerate_gpu_ids", None)
     raw["log_train_accuracy"] = bool(raw.get("log_train_accuracy", True))
     raw["train_accuracy_log_steps"] = int(raw.get("train_accuracy_log_steps", 20))
+    raw["freeze_layers"] = [int(i) for i in (raw.get("freeze_layers", []) or [])]
+    raw["freeze_modules"] = [str(m).strip() for m in (raw.get("freeze_modules", []) or []) if str(m).strip()]
     restart_raw = dict(raw.get("restart", {}) or {})
     if "enable" not in restart_raw:
         restart_raw["enable"] = raw.get("restart", True)
@@ -469,6 +495,121 @@ def _print_trainable_parameters(model) -> None:
     print(f"Trainable params: {trainable_params:,} / {total_params:,} ({trainable_ratio:.2f}%)")
 
 
+def _apply_freeze_config(model, cfg: FullSFTConfig) -> None:
+    freeze_module_patterns = [pattern.strip() for pattern in cfg.freeze_modules if pattern.strip()]
+    freeze_layer_prefixes = []
+    for layer_idx in cfg.freeze_layers:
+        freeze_layer_prefixes.extend(
+            [
+                f"model.layers.{layer_idx}.",
+                f"layers.{layer_idx}.",
+                f"model.model.layers.{layer_idx}.",
+            ]
+        )
+
+    if not freeze_module_patterns and not freeze_layer_prefixes:
+        return
+
+    frozen_param_names: List[str] = []
+    module_hit_counter = {pattern: 0 for pattern in freeze_module_patterns}
+    for name, param in model.named_parameters():
+        hit_layer = any(name.startswith(prefix) for prefix in freeze_layer_prefixes)
+        hit_module = False
+        for pattern in freeze_module_patterns:
+            if pattern in name:
+                module_hit_counter[pattern] += 1
+                hit_module = True
+        if hit_layer or hit_module:
+            param.requires_grad = False
+            frozen_param_names.append(name)
+
+    if frozen_param_names:
+        print(f"Applied freezing rules: {len(frozen_param_names):,} parameters were frozen.")
+        if freeze_layer_prefixes:
+            print(f"  - freeze_layers: {sorted(set(cfg.freeze_layers))}")
+        if freeze_module_patterns:
+            print("  - freeze_modules hit counts:")
+            for pattern, count in module_hit_counter.items():
+                print(f"      {pattern}: {count}")
+    else:
+        print("Freeze rules were provided, but no parameter names matched.")
+
+
+def _lr_bucket_for_param(name: str) -> str:
+    if name.startswith(
+        (
+            "model.sam_model.",
+            "sam_model.",
+            "model.projector.",
+            "projector.",
+            "model.model.sam_model.",
+            "model.model.projector.",
+        )
+    ):
+        return "vision"
+    if name.startswith(
+        (
+            "model.layers.",
+            "layers.",
+            "model.model.layers.",
+            "model.embed_tokens",
+            "embed_tokens",
+            "model.model.embed_tokens",
+            "model.norm.",
+            "norm.",
+            "model.model.norm.",
+            "model.lm_head",
+            "lm_head",
+            "model.model.lm_head",
+        )
+    ):
+        return "language"
+    return "other"
+
+
+def _build_optimizer_with_split_lrs(cfg: FullSFTConfig, model) -> torch.optim.Optimizer:
+    vision_lr = cfg.vision_learning_rate if cfg.vision_learning_rate is not None else cfg.learning_rate
+    language_lr = cfg.language_learning_rate if cfg.language_learning_rate is not None else cfg.learning_rate
+    other_lr = cfg.learning_rate
+    use_fused = cfg.optim == "adamw_torch_fused" and torch.cuda.is_available()
+
+    # Keep LayerNorm/bias with no weight decay like Trainer defaults.
+    no_decay_keys = ("bias", "layernorm.weight", "layer_norm.weight", "norm.weight", "rmsnorm.weight", "rms_norm.weight")
+    grouped: Dict[Tuple[str, bool], Dict[str, object]] = {}
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        bucket = _lr_bucket_for_param(name)
+        lr = vision_lr if bucket == "vision" else language_lr if bucket == "language" else other_lr
+        no_decay = any(key in name.lower() for key in no_decay_keys)
+        group_key = (bucket, no_decay)
+        if group_key not in grouped:
+            grouped[group_key] = {
+                "params": [],
+                "lr": lr,
+                "weight_decay": 0.0 if no_decay else cfg.weight_decay,
+                "bucket": bucket,
+            }
+        grouped[group_key]["params"].append(param)
+
+    param_groups = [group for group in grouped.values() if group["params"]]
+    if not param_groups:
+        raise RuntimeError("No trainable parameters found after applying freezing rules.")
+
+    summary = []
+    for group in param_groups:
+        param_count = sum(p.numel() for p in group["params"])
+        summary.append(f"{group['bucket']} lr={group['lr']:.2e} wd={group['weight_decay']:.3g} params={param_count:,}")
+        group.pop("bucket", None)
+    print("Optimizer param groups:")
+    for line in summary:
+        print(f"  - {line}")
+
+    if use_fused:
+        return torch.optim.AdamW(param_groups, fused=True)
+    return torch.optim.AdamW(param_groups)
+
+
 def main() -> None:
     cli_args = parse_cli_args()
     cfg = load_config(cli_args.config)
@@ -511,6 +652,7 @@ def main() -> None:
     model.config.use_cache = not cfg.enable_gradient_checkpointing
     if cfg.enable_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    _apply_freeze_config(model, cfg)
     _print_trainable_parameters(model)
 
     train_datasets: List[Dataset] = []
@@ -616,6 +758,8 @@ def main() -> None:
         save_steps=save_steps,
         evaluation_strategy="no",
     )
+    use_split_lrs = cfg.vision_learning_rate is not None or cfg.language_learning_rate is not None
+    custom_optimizer = _build_optimizer_with_split_lrs(cfg, model) if use_split_lrs else None
     trainer = TrainCanonAccuracyTrainer(
         model=model,
         tokenizer=tokenizer,
@@ -624,6 +768,7 @@ def main() -> None:
         data_collator=data_collator,
         train_dataset=train_dataset,
         args=training_args,
+        optimizers=(custom_optimizer, None) if custom_optimizer is not None else (None, None),
     )
     if val_named_datasets and cfg.eval_every_steps:
         periodic_eval_callback = PeriodicMultiValEvalCallback(
