@@ -9,7 +9,7 @@ full_or_lora: lora
 # 3) checkpoint_name, e.g. checkpoint-1500
 # 4) if all null, auto use latest checkpoint-* under weight_root
 checkpoint_path: null
-checkpoint_step: 1200
+checkpoint_step: 2400
 checkpoint_name: null
 
 # output directory for evaluation artifacts/metrics
