@@ -1,15 +1,25 @@
 pretrained_weight_path: ../DeepSeek-OCR-2
 train_sets:
   - train_csv: ./training_data/pubchem/train_200k.csv
-    data_mode: pre_rendered # dynamic / pre_rendered / realistic
-    pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
+    data_mode: dynamic
+    pre_rendered_image_dir: null
+    realistic_image_root: null
     instruction: "<image>\n Give me the SMILES of the molecule. "
+    style: molscribe_default # molscribe_default / chemdraw_like
+    mol_augment: true
+    include_condensed: False
+    max_samples: null
     sample_num: 64000
 
   - train_csv: ./training_data/pubchem/train_200k.csv
-    data_mode: pre_rendered
-    pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
+    data_mode: dynamic
+    pre_rendered_image_dir: null
+    realistic_image_root: null
     instruction: "<image>\n Give me the SMILES of the molecule. "
+    style: chemdraw_like # molscribe_default / chemdraw_like
+    mol_augment: false
+    include_condensed: False
+    max_samples: null
     sample_num: 64000
 
   - train_csv: ./training_data/uspto_mol/train_200k.csv
@@ -103,13 +113,13 @@ val_sets:
 seed: 3407
 batch_size: 4
 grad_accum: 8
-# learning_rate: 0.00001
+learning_rate: 0.00001
 # Optional split learning rates:
 # - vision_learning_rate controls `model.sam_model` and `model.projector`
 # - language_learning_rate controls the language model blocks (e.g. `model.layers`)
 # If null, fallback to `learning_rate`.
-vision_learning_rate: 0.00002
-language_learning_rate: 0.000005
+vision_learning_rate: 0.000005
+language_learning_rate: 0.00002
 weight_decay: 0.001
 warmup_steps: 100
 max_steps: 1500
@@ -136,11 +146,12 @@ accelerate_gpu_ids: "6,7,8,9"
 train_on_responses_only: true
 # Freeze by language layer indices (DeepSeek-OCR-2 has 12 language layers: 0-11).
 # For image->SMILES, freeze lower language layers and keep upper layers trainable.
-freeze_layers: [0, 1, 2, 3, 4, 5, 6, 7]
+freeze_layers: [0, 1]
 # Freeze by module-name substring matching, similar in spirit to LoRA `target_modules`.
 # Here we freeze low-level visual blocks, while keeping visual high-level blocks (8-11)
 # and projector trainable for OCR adaptation.
 freeze_modules:
+  - model.embed_tokens
   - model.sam_model.patch_embed
   - model.sam_model.blocks.0
   - model.sam_model.blocks.1
@@ -158,7 +169,7 @@ restart:
   auto_resume_from_latest_checkpoint: true
   resume_from_checkpoint: null
   wandb_resume_same_run: true
-wandb: true
+wandb: false
 wandb_project: ChemSeek-OCR
 wandb_run_name: smiles-fullsft-3X64k-1epoch-lr0.00001-afterlora-finetune
 wandb_api_key: null
