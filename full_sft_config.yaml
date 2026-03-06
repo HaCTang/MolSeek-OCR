@@ -1,6 +1,6 @@
 pretrained_weight_path: ../DeepSeek-OCR-2
 train_sets:
-  - train_csv: ./training_data/pubchem/train_200k.csv
+  - train_csv: ./training_data/pubchem/train_1m.csv
     data_mode: dynamic
     pre_rendered_image_dir: null
     realistic_image_root: null
@@ -9,9 +9,9 @@ train_sets:
     mol_augment: true
     include_condensed: False
     max_samples: null
-    sample_num: 64000
+    sample_num: 300000
 
-  - train_csv: ./training_data/pubchem/train_200k.csv
+  - train_csv: ./training_data/pubchem/train_1m.csv
     data_mode: dynamic
     pre_rendered_image_dir: null
     realistic_image_root: null
@@ -20,13 +20,13 @@ train_sets:
     mol_augment: false
     include_condensed: False
     max_samples: null
-    sample_num: 64000
+    sample_num: 300000
 
-  - train_csv: ./training_data/uspto_mol/train_200k.csv
+  - train_csv: ./training_data/uspto_mol/train_680k.csv
     data_mode: realistic
     realistic_image_root: ./training_data
     instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: 64000
+    sample_num: 200000
 
 enable_val_sets: False
 eval_every_steps: 1500
@@ -122,9 +122,9 @@ vision_learning_rate: 0.000005
 language_learning_rate: 0.00002
 weight_decay: 0.001
 warmup_steps: 100
-max_steps: 1500
+max_steps: 5000
 epochs: 0.0
-save_steps: 150
+save_steps: 500
 optim: adamw_torch_fused
 allow_tf32: true
 enable_gradient_checkpointing: true
@@ -141,12 +141,12 @@ ddp_find_unused_parameters: false
 ddp_backend: nccl
 ddp_timeout_seconds: 1800
 use_accelerate: true
-accelerate_num_processes: 4
-accelerate_gpu_ids: "6,7,8,9"
+accelerate_num_processes: 5
+accelerate_gpu_ids: "5,6,7,8,9"
 train_on_responses_only: true
 # Freeze by language layer indices (DeepSeek-OCR-2 has 12 language layers: 0-11).
 # For image->SMILES, freeze lower language layers and keep upper layers trainable.
-freeze_layers: [0, 1]
+freeze_layers: [0, 1, 2]
 # Freeze by module-name substring matching, similar in spirit to LoRA `target_modules`.
 # Here we freeze low-level visual blocks, while keeping visual high-level blocks (8-11)
 # and projector trainable for OCR adaptation.
@@ -169,7 +169,7 @@ restart:
   auto_resume_from_latest_checkpoint: true
   resume_from_checkpoint: null
   wandb_resume_same_run: true
-wandb: false
+wandb: true
 wandb_project: ChemSeek-OCR
-wandb_run_name: smiles-fullsft-3X64k-1epoch-lr0.00001-afterlora-finetune
-wandb_api_key: null
+wandb_run_name: smiles-fullsft-800k-1epoch-mixedlr-finetune
+wandb_api_key: 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
