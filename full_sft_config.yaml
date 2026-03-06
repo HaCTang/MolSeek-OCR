@@ -120,8 +120,8 @@ learning_rate: 0.00001
 # If null, fallback to `learning_rate`.
 vision_learning_rate: 0.000005
 language_learning_rate: 0.00002
-weight_decay: 0.001
-warmup_steps: 100
+weight_decay: 0.01
+warmup_steps: 250
 max_steps: 5000
 epochs: 0.0
 save_steps: 500
@@ -146,7 +146,7 @@ accelerate_gpu_ids: "5,6,7,8,9"
 train_on_responses_only: true
 # Freeze by language layer indices (DeepSeek-OCR-2 has 12 language layers: 0-11).
 # For image->SMILES, freeze lower language layers and keep upper layers trainable.
-freeze_layers: [0, 1, 2]
+freeze_layers: [0, 1, 2, 3]
 # Freeze by module-name substring matching, similar in spirit to LoRA `target_modules`.
 # Here we freeze low-level visual blocks, while keeping visual high-level blocks (8-11)
 # and projector trainable for OCR adaptation.
