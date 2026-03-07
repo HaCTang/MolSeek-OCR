@@ -1,7 +1,7 @@
 pretrained_weight_path: ../DeepSeek-OCR-2/hf_cache/models--deepseek-ai--DeepSeek-OCR-2/snapshots/aaa02f3811945a91062062994c5c4a3f4c0af2b0
-weight_root: ./weight_lora_sft
+weight_root: ./weight_full_sft
 # mode: lora / full
-full_or_lora: lora
+full_or_lora: full
 
 # Choose one of:
 # 1) checkpoint_path (highest priority), e.g. ./weight/checkpoint-1500
@@ -9,11 +9,11 @@ full_or_lora: lora
 # 3) checkpoint_name, e.g. checkpoint-1500
 # 4) if all null, auto use latest checkpoint-* under weight_root
 checkpoint_path: null
-checkpoint_step: 2700
+checkpoint_step: 5000
 checkpoint_name: null
 
 # output directory for evaluation artifacts/metrics
-output_dir: ./lora_sft_evaluation_outputs
+output_dir: ./full_sft_evaluation_outputs
 # optional alias of output_dir (supported by evaluation.py)
 # output_dir_path: ./evaluation_outputs
 image_size: 768

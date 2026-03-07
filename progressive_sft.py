@@ -115,11 +115,52 @@ def _patch_model_loading_for_vllm_merged(cfg) -> None:
     full_core.AutoModel.from_pretrained = patched_from_pretrained
 
 
+def _patch_lr_bucket_for_qwen2() -> None:
+    """
+    Ensure qwen2_model params are always treated as vision branch in progressive mode.
+    """
+    original_lr_bucket = full_core._lr_bucket_for_param
+
+    def patched_lr_bucket(name: str) -> str:
+        if name.startswith(("model.qwen2_model.", "qwen2_model.", "model.model.qwen2_model.")):
+            return "vision"
+        return original_lr_bucket(name)
+
+    full_core._lr_bucket_for_param = patched_lr_bucket
+
+
+def _ensure_progressive_train_controls(cfg) -> None:
+    """
+    Ensure progressive config supports freeze/split-LR controls.
+    This keeps progressive entrypoint compatible with older full_sft versions.
+    """
+    if not hasattr(cfg, "vision_learning_rate"):
+        cfg.vision_learning_rate = None
+    if not hasattr(cfg, "language_learning_rate"):
+        cfg.language_learning_rate = None
+    if not hasattr(cfg, "freeze_layers"):
+        cfg.freeze_layers = []
+    if not hasattr(cfg, "freeze_modules"):
+        cfg.freeze_modules = []
+
+    vision_lr = cfg.vision_learning_rate if cfg.vision_learning_rate is not None else cfg.learning_rate
+    language_lr = cfg.language_learning_rate if cfg.language_learning_rate is not None else cfg.learning_rate
+    print(
+        "Progressive controls: "
+        f"vision_lr={vision_lr:.2e}, "
+        f"language_lr={language_lr:.2e}, "
+        f"freeze_layers={len(cfg.freeze_layers)}, "
+        f"freeze_modules={len(cfg.freeze_modules)}"
+    )
+
+
 def main() -> None:
     cli_args = parse_cli_args()
     cfg = full_core.load_config(cli_args.config)
+    _ensure_progressive_train_controls(cfg)
     _maybe_launch_with_accelerate(cfg, cli_args)
     _patch_model_loading_for_vllm_merged(cfg)
+    _patch_lr_bucket_for_qwen2()
 
     # Reuse full_sft implementation while forcing progressive CLI/config.
     full_core.parse_cli_args = lambda: cli_args

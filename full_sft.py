@@ -542,8 +542,11 @@ def _lr_bucket_for_param(name: str) -> str:
             "sam_model.",
             "model.projector.",
             "projector.",
+            "model.qwen2_model.",
+            "qwen2_model.",
             "model.model.sam_model.",
             "model.model.projector.",
+            "model.model.qwen2_model.",
         )
     ):
         return "vision"
