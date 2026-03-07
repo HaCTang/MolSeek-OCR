@@ -1,4 +1,4 @@
-pretrained_weight_path: ./merged_models/lora_checkpoint-200
+pretrained_weight_path: ./merged_lora_sft_3X64_1EPOCH_model/lora_checkpoint-3000
 train_sets:
   # - train_csv: ./training_data/pubchem/train_200k.csv
   #   data_mode: pre_rendered # dynamic / pre_rendered / realistic
@@ -82,18 +82,18 @@ val_sets:
 seed: 3407
 batch_size: 4
 grad_accum: 8
-learning_rate: 0.000005
+learning_rate: 0.00001
 # Optional split learning rates for progressive full SFT:
 # - vision_learning_rate controls `model.sam_model` and `model.projector`
 # - language_learning_rate controls language model blocks (e.g. `model.layers`)
 # If null, fallback to `learning_rate`.
 vision_learning_rate: 0.000005
 language_learning_rate: 0.00002
-weight_decay: 0.001
-warmup_steps: 50
-max_steps: 400
+weight_decay: 0.01
+warmup_steps: 250
+max_steps: 2500
 epochs: 0.0
-save_steps: 100
+save_steps: 500
 optim: adamw_torch_fused
 allow_tf32: true
 enable_gradient_checkpointing: true
@@ -110,8 +110,8 @@ ddp_find_unused_parameters: false
 ddp_backend: nccl
 ddp_timeout_seconds: 1800
 use_accelerate: true
-accelerate_num_processes: 4
-accelerate_gpu_ids: "5,6,7,8,9"
+accelerate_num_processes: 10
+accelerate_gpu_ids: "0,1,2,3,4,5,6,7,8,9"
 train_on_responses_only: true
 # Freeze by language layer indices (e.g. [0,1,2] -> freeze model.layers.0/1/2).
 freeze_layers: []
@@ -122,10 +122,8 @@ freeze_layers: []
 #   - model.sam_model.patch_embed
 #   - model.sam_model.blocks.0
 freeze_modules: 
+  - model.sam_model
   - model.embed_tokens
-  - model.sam_model.patch_embed
-  - model.qwen2_model.query_768
-  - model.qwen2_model.query_1024
 log_train_accuracy: true
 train_accuracy_log_steps: 20
 restart:
@@ -134,7 +132,7 @@ restart:
   auto_resume_from_latest_checkpoint: true
   resume_from_checkpoint: null
   wandb_resume_same_run: true
-wandb: false
+wandb: true
 wandb_project: ChemSeek-OCR
-wandb_run_name: smiles-progressive-lr0.000005-fullsft-after-merged-lora-3X64k-1epoch
+wandb_run_name: smiles-progressive-mixedlr-fullsft-after-merged-lora-800K-1epoch
 wandb_api_key: null
