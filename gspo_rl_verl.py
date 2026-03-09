@@ -203,10 +203,14 @@ def _tanimoto_similarity(smi1: str, smi2: str) -> float:
 def _compute_reward_components(
     gold_smiles: str, pred_smiles: str, chiral_no_annotation_reward: float = 0.0
 ) -> Dict[str, float]:
-    canon_gold, _ = _canonicalize_smiles(gold_smiles, ignore_cistrans=True)
+    canon_gold, valid_gold = _canonicalize_smiles(gold_smiles, ignore_cistrans=True)
     canon_pred, valid_pred = _canonicalize_smiles(pred_smiles, ignore_cistrans=True)
-    graph_gold, _ = _canonicalize_smiles(gold_smiles, ignore_chiral=True, ignore_cistrans=True)
-    graph_pred, _ = _canonicalize_smiles(pred_smiles, ignore_chiral=True, ignore_cistrans=True)
+    graph_gold, valid_graph_gold = _canonicalize_smiles(
+        gold_smiles, ignore_chiral=True, ignore_cistrans=True
+    )
+    graph_pred, valid_graph_pred = _canonicalize_smiles(
+        pred_smiles, ignore_chiral=True, ignore_cistrans=True
+    )
 
     canon_gold = _replace_empty(canon_gold)
     canon_pred = _replace_empty(canon_pred)
@@ -214,13 +218,17 @@ def _compute_reward_components(
     graph_pred = _replace_empty(graph_pred)
 
     has_chiral = "@" in (canon_gold or "")
-    chiral_acc = float(canon_gold == canon_pred) if has_chiral else chiral_no_annotation_reward
+    canon_match = float(valid_gold and valid_pred and (canon_gold == canon_pred))
+    graph_match = float(valid_graph_gold and valid_graph_pred and (graph_gold == graph_pred))
+    chiral_acc = (
+        float(canon_match > 0.5) if has_chiral else chiral_no_annotation_reward
+    )
 
     return {
         "validity": float(valid_pred),
         "tanimoto": _tanimoto_similarity(gold_smiles, pred_smiles),
-        "canon_smiles": float(canon_gold == canon_pred),
-        "graph": float(graph_gold == graph_pred),
+        "canon_smiles": canon_match,
+        "graph": graph_match,
         "chiral": chiral_acc,
     }
 
@@ -840,6 +848,7 @@ def train(cfg: dict, config_path: str) -> None:
     data_cfg = cfg.get("data", {})
     train_cfg = cfg.get("training", {})
     gspo_cfg = cfg.get("gspo", {})
+    rollout_cfg = cfg.get("rollout", {})
     gpu_cfg = cfg.get("gpu", {})
     rw_cfg = cfg.get("reward_weights", {})
     reward_debug_cfg = cfg.get("reward_debug", {})
@@ -902,6 +911,13 @@ def train(cfg: dict, config_path: str) -> None:
     mini_bs = train_cfg.get("ppo_mini_batch_size", train_batch)
 
     group_size = gspo_cfg.get("group_size", 8)
+    rollout_temperature = float(rollout_cfg.get("temperature", 1.0))
+    rollout_top_p = float(rollout_cfg.get("top_p", 1.0))
+    val_rollout_temperature = float(
+        rollout_cfg.get("val_temperature", rollout_temperature)
+    )
+    val_rollout_top_p = float(rollout_cfg.get("val_top_p", rollout_top_p))
+    val_rollout_n = int(rollout_cfg.get("val_n", 1))
 
     # verl normalizes: effective = mini_bs * group_size // n_gpus
     # it must be divisible by micro_bs
@@ -1010,11 +1026,11 @@ def train(cfg: dict, config_path: str) -> None:
         f"actor_rollout_ref.rollout.tensor_model_parallel_size={tp_size}",
         f"actor_rollout_ref.rollout.gpu_memory_utilization={gpu_mem_util}",
         f"actor_rollout_ref.rollout.n={group_size}",
-        "actor_rollout_ref.rollout.temperature=1.0",
-        "actor_rollout_ref.rollout.top_p=1.0",
-        "actor_rollout_ref.rollout.val_kwargs.temperature=1.0",
-        "actor_rollout_ref.rollout.val_kwargs.top_p=1.0",
-        "actor_rollout_ref.rollout.val_kwargs.n=1",
+        f"actor_rollout_ref.rollout.temperature={rollout_temperature}",
+        f"actor_rollout_ref.rollout.top_p={rollout_top_p}",
+        f"actor_rollout_ref.rollout.val_kwargs.temperature={val_rollout_temperature}",
+        f"actor_rollout_ref.rollout.val_kwargs.top_p={val_rollout_top_p}",
+        f"actor_rollout_ref.rollout.val_kwargs.n={val_rollout_n}",
         "actor_rollout_ref.rollout.enable_chunked_prefill=False",
         "actor_rollout_ref.rollout.enforce_eager=True",
         "actor_rollout_ref.rollout.free_cache_engine=True",

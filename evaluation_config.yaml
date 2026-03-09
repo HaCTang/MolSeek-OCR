@@ -104,13 +104,13 @@ benchmarks:
   #   sample_num: null
   #   enabled: true
 
-  # - name: UOB
-  #   val_csv: ./benchmark/real/UOB.csv
-  #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
-  #   instruction: "<image>\n Give me the SMILES of the molecule. "
-  #   sample_num: null
-  #   enabled: true
+  - name: UOB
+    val_csv: ./benchmark/real/UOB.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+    enabled: true
 
   # - name: USPTO
   #   val_csv: ./benchmark/real/USPTO.csv

@@ -95,6 +95,16 @@ gspo:
   use_dynamic_bsz: true
 
 # ---------------------------------------------------------------------------
+# Rollout sampling
+# ---------------------------------------------------------------------------
+rollout:
+  temperature: 0.5
+  top_p: 1.0
+  val_temperature: 0.0
+  val_top_p: 1.0
+  val_n: 1
+
+# ---------------------------------------------------------------------------
 # Reward weights  (same scale as router_rl_config.yaml)
 # ---------------------------------------------------------------------------
 reward_weights:
@@ -116,7 +126,7 @@ reward_debug:
 gpu:
   n_gpus_per_node: 10
   gpu_ids: "0,1,2,3,4,5,6,7,8,9"
-  tensor_model_parallel_size: 2
+  tensor_model_parallel_size: 10
   vllm_gpu_memory_utilization: 0.3
   param_offload: false
   optimizer_offload: false
