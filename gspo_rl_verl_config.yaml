@@ -10,7 +10,7 @@
 # Model
 # ---------------------------------------------------------------------------
 model:
-  path: ./weight_progressive_sft/checkpoint-400
+  path: ./weight_progressive_sft/checkpoint-2000
   trust_remote_code: true
   enable_gradient_checkpointing: true
   attn_implementation: flash_attention_2
