@@ -218,6 +218,7 @@ cd verl-0.6.1
  In order to be compatible with the fine-tuning code of DeepSeek-OCR-2, please open **verl-0.6.1/setup.py**. Set "transformers==4.57" in the **install_requires**, and set ["tensordict>=0.8.0,<=0.10.0,!=0.9.0", "vllm==0.8.5"] in the **VLLM_REQUIRES**.
 
 ```bash
+# pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu118 #You can run this if error says libcudart.so.11.0
 pip install -e .[vllm]
 pip install flash-attn==2.7.3 --no-build-isolation
 pip install matplotlib albumentations rdkit SmilesPE pandas addict

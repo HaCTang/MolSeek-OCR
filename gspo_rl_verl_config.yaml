@@ -33,21 +33,21 @@ data:
     min_samples: 100
 
   train_sets:
-    - train_csv: ./training_data/pubchem/train_200k.csv
+    - train_csv: ./training_data/pubchem/train_1m.csv
       data_mode: dynamic
       pre_rendered_image_dir: ./training_data/pubchem/train_200k_chemdraw_like
       style: molscribe_default # molscribe_default / chemdraw_like
       mol_augment: true
       include_condensed: false
-      sample_num: 6400
+      sample_num: 12800
 
-    - train_csv: ./training_data/pubchem/train_200k.csv
+    - train_csv: ./training_data/pubchem/train_1m.csv
       data_mode: dynamic
       pre_rendered_image_dir: ./training_data/pubchem/train_200k_molscribe_default
       style: chemdraw_like # molscribe_default / chemdraw_like
       mol_augment: false
       include_condensed: false
-      sample_num: 6400
+      sample_num: 12800
 
     - train_csv: ./training_data/uspto_mol/train_680k.csv
       data_mode: realistic
@@ -126,5 +126,5 @@ validation:
 wandb:
   enabled: false
   project: ChemSeek-OCR
-  run_name: gspo-verl-2gpu
+  run_name: gspo-verl-5gpu
   api_key: null
