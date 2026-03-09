@@ -616,9 +616,22 @@ def _parse_freeze_layers():
 FREEZE_LAYERS = _parse_freeze_layers()
 
 
+def _parse_freeze_modules():
+    raw = os.environ.get("CHEMSEEK_FREEZE_MODULES", "")
+    out = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if part:
+            out.append(part)
+    return out
+
+
+FREEZE_MODULES = _parse_freeze_modules()
+
+
 def _apply_layer_freeze(model):
-    if not FREEZE_LAYERS:
-        print("[GSPO freeze] freeze_layers is empty; skip layer freezing.")
+    if not FREEZE_LAYERS and not FREEZE_MODULES:
+        print("[GSPO freeze] freeze_layers/freeze_modules are empty; skip freezing.")
         return model
 
     prefixes = []
@@ -633,17 +646,29 @@ def _apply_layer_freeze(model):
 
     frozen_count = 0
     frozen_elems = 0
+    module_hit_counter = {m: 0 for m in FREEZE_MODULES}
     for name, param in model.named_parameters():
-        if any(name.startswith(prefix) for prefix in prefixes):
+        by_layer = any(name.startswith(prefix) for prefix in prefixes)
+        by_module = False
+        for module_pattern in FREEZE_MODULES:
+            if module_pattern in name:
+                module_hit_counter[module_pattern] += 1
+                by_module = True
+        if by_layer or by_module:
             if param.requires_grad:
                 frozen_count += 1
                 frozen_elems += int(param.numel())
             param.requires_grad = False
 
     print(
-        f"[GSPO freeze] Applied freeze_layers={FREEZE_LAYERS}; "
+        f"[GSPO freeze] Applied freeze_layers={FREEZE_LAYERS}, "
+        f"freeze_modules={FREEZE_MODULES}; "
         f"frozen params={frozen_count}, frozen elements={frozen_elems:,}"
     )
+    if FREEZE_MODULES:
+        print("[GSPO freeze] freeze_modules hit counts:")
+        for module_pattern, hit_count in module_hit_counter.items():
+            print(f"  - {module_pattern}: {hit_count}")
     return model
 
 
@@ -665,7 +690,10 @@ def _patched_auto_causal_fp(cls, *args, **kwargs):
 
 AutoModel.from_pretrained = _patched_auto_model_fp
 AutoModelForCausalLM.from_pretrained = _patched_auto_causal_fp
-print(f"[GSPO freeze] Patched AutoModel for freeze_layers={FREEZE_LAYERS}")
+print(
+    "[GSPO freeze] Patched AutoModel "
+    f"for freeze_layers={FREEZE_LAYERS}, freeze_modules={FREEZE_MODULES}"
+)
 '''
 
 
@@ -819,11 +847,15 @@ def train(cfg: dict, config_path: str) -> None:
     val_cfg = cfg.get("validation", {})
     output_dir = cfg.get("output_dir", str(SCRIPT_DIR / "weight_gspo_rl_verl"))
     freeze_layers = train_cfg.get("freeze_layers", []) or []
+    freeze_modules = train_cfg.get("freeze_modules", []) or []
     if not isinstance(freeze_layers, list):
         raise ValueError("training.freeze_layers must be a list, e.g. [0,1,2]")
+    if not isinstance(freeze_modules, list):
+        raise ValueError("training.freeze_modules must be a list, e.g. ['model.embed_tokens']")
     freeze_layers = [int(x) for x in freeze_layers]
     if any(x < 0 for x in freeze_layers):
         raise ValueError("training.freeze_layers must contain non-negative integers")
+    freeze_modules = [str(x).strip() for x in freeze_modules if str(x).strip()]
     _ensure_local_checkpoint_compat(str(model_cfg.get("path", "")))
     ext_module_name = _write_freeze_ext_module(SCRIPT_DIR)
 
@@ -967,6 +999,7 @@ def train(cfg: dict, config_path: str) -> None:
         "actor_rollout_ref.actor.freeze_vision_tower=True",
         f"actor_rollout_ref.actor.fsdp_config.param_offload={param_offload}",
         f"actor_rollout_ref.actor.fsdp_config.optimizer_offload={optim_offload}",
+        "actor_rollout_ref.actor.fsdp_config.use_orig_params=True",
         f"actor_rollout_ref.actor.fsdp_config.model_dtype={fsdp_model_dtype}",
         f"+actor_rollout_ref.actor.fsdp_config.mixed_precision.param_dtype={fsdp_model_dtype}",
         f"+actor_rollout_ref.actor.fsdp_config.mixed_precision.reduce_dtype={gradient_precision}",
@@ -1055,6 +1088,7 @@ def train(cfg: dict, config_path: str) -> None:
     env["CHEMSEEK_MODEL_PATH"] = str(model_cfg["path"])
     env["CHEMSEEK_PROMPT"] = str(data_cfg.get("instruction", "<image>\n Give me the SMILES of the molecule. "))
     env["CHEMSEEK_FREEZE_LAYERS"] = ",".join(str(x) for x in freeze_layers)
+    env["CHEMSEEK_FREEZE_MODULES"] = ",".join(freeze_modules)
 
     if wandb_cfg.get("enabled", False):
         api_key = wandb_cfg.get("api_key") or os.environ.get("WANDB_API_KEY")
@@ -1077,6 +1111,7 @@ def train(cfg: dict, config_path: str) -> None:
     print(f"Batch size:       {train_batch}")
     print(f"LR:               {lr}")
     print(f"Freeze layers:    {freeze_layers if freeze_layers else '[] (disabled)'}")
+    print(f"Freeze modules:   {freeze_modules if freeze_modules else '[] (disabled)'}")
     print(f"Epochs:           {epochs}")
     print(f"Validation:       {validation_enabled} (test_freq={test_freq})")
     print(f"Val data:         {val_file_for_cmd}")

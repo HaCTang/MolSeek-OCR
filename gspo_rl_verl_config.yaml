@@ -65,7 +65,15 @@ training:
   ppo_micro_batch_size_per_gpu: 2
   # Freeze language decoder layers by index, e.g. [0,1,2].
   # Matches prefixes like model.layers.{idx}.*
-  freeze_layers: []
+  freeze_layers: [0]
+  # Freeze modules by substring matching on parameter names.
+  # Example:
+  # freeze_modules:
+  #   - model.embed_tokens
+  #   - model.sam_model.patch_embed
+  freeze_modules: 
+    - model.sam_model
+    - model.embed_tokens
   learning_rate: 0.00001
   weight_decay: 0.1
   clip_grad: 1.0
@@ -129,5 +137,5 @@ validation:
 wandb:
   enabled: false
   project: ChemSeek-OCR
-  run_name: gspo-verl-5gpu
+  run_name: gspo-verl-10gpu
   api_key: null
