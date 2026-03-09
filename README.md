@@ -252,3 +252,11 @@ python prepare_verl_data.py --config gspo_rl_verl_config.yaml --workers 8
 # Step 2: Launch GSPO training
 python gspo_rl_verl.py --config gspo_rl_verl_config.yaml
 ```
+
+## Inference
+
+For **transformer** inference, please use conda environment **chemseek-ocr**: 
+
+```yaml
+python transformer_infer_case.py   --model-path ./weight_progressive_sft/checkpoint-2000   --image-file ./test_img/penicillin.jpg
+```
