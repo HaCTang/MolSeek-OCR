@@ -585,6 +585,88 @@ _HF_V2_ATTN_UNPACK_NEW = """        attn_outputs = self.self_attn(
             raise TypeError(f\"Unexpected attention output type: {type(attn_outputs)}\")"""
 _TARGET_VLLM_VERSION = "0.8.5"
 _TARGET_TRANSFORMERS_VERSION = "4.57.0"
+_FREEZE_EXT_MODULE_NAME = "_chemseek_gspo_freeze"
+_FREEZE_EXT_CODE = '''\
+"""Auto-generated external_lib for verl: DeepSeek OCR2 patch + layer freezing."""
+import os
+from transformers import AutoModel, AutoModelForCausalLM
+
+try:
+    import vllm_deepseekocr2_patch  # noqa: F401
+except Exception as exc:
+    print(f"[GSPO freeze] WARN: failed to import vllm_deepseekocr2_patch: {exc}")
+
+
+def _parse_freeze_layers():
+    raw = os.environ.get("CHEMSEEK_FREEZE_LAYERS", "")
+    out = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except Exception:
+            continue
+        if value >= 0:
+            out.append(value)
+    return sorted(set(out))
+
+
+FREEZE_LAYERS = _parse_freeze_layers()
+
+
+def _apply_layer_freeze(model):
+    if not FREEZE_LAYERS:
+        print("[GSPO freeze] freeze_layers is empty; skip layer freezing.")
+        return model
+
+    prefixes = []
+    for idx in FREEZE_LAYERS:
+        prefixes.extend(
+            [
+                f"model.layers.{idx}.",
+                f"layers.{idx}.",
+                f"model.model.layers.{idx}.",
+            ]
+        )
+
+    frozen_count = 0
+    frozen_elems = 0
+    for name, param in model.named_parameters():
+        if any(name.startswith(prefix) for prefix in prefixes):
+            if param.requires_grad:
+                frozen_count += 1
+                frozen_elems += int(param.numel())
+            param.requires_grad = False
+
+    print(
+        f"[GSPO freeze] Applied freeze_layers={FREEZE_LAYERS}; "
+        f"frozen params={frozen_count}, frozen elements={frozen_elems:,}"
+    )
+    return model
+
+
+_orig_auto_model_fp = AutoModel.from_pretrained.__func__
+_orig_auto_causal_fp = AutoModelForCausalLM.from_pretrained.__func__
+
+
+@classmethod
+def _patched_auto_model_fp(cls, *args, **kwargs):
+    model = _orig_auto_model_fp(cls, *args, **kwargs)
+    return _apply_layer_freeze(model)
+
+
+@classmethod
+def _patched_auto_causal_fp(cls, *args, **kwargs):
+    model = _orig_auto_causal_fp(cls, *args, **kwargs)
+    return _apply_layer_freeze(model)
+
+
+AutoModel.from_pretrained = _patched_auto_model_fp
+AutoModelForCausalLM.from_pretrained = _patched_auto_causal_fp
+print(f"[GSPO freeze] Patched AutoModel for freeze_layers={FREEZE_LAYERS}")
+'''
 
 
 def _assert_target_runtime_versions() -> None:
@@ -713,6 +795,13 @@ def _ensure_local_checkpoint_compat(model_path: str) -> None:
             print(f"[compat] WARNING: could not patch {src_path}: {exc}")
 
 
+def _write_freeze_ext_module(target_dir: Path) -> str:
+    ext_path = target_dir / f"{_FREEZE_EXT_MODULE_NAME}.py"
+    ext_path.write_text(_FREEZE_EXT_CODE, encoding="utf-8")
+    print(f"Wrote external_lib module: {ext_path}")
+    return _FREEZE_EXT_MODULE_NAME
+
+
 def train(cfg: dict, config_path: str) -> None:
     """Build verl GSPO config overrides and launch training."""
 
@@ -729,7 +818,14 @@ def train(cfg: dict, config_path: str) -> None:
     wandb_cfg = cfg.get("wandb", {})
     val_cfg = cfg.get("validation", {})
     output_dir = cfg.get("output_dir", str(SCRIPT_DIR / "weight_gspo_rl_verl"))
+    freeze_layers = train_cfg.get("freeze_layers", []) or []
+    if not isinstance(freeze_layers, list):
+        raise ValueError("training.freeze_layers must be a list, e.g. [0,1,2]")
+    freeze_layers = [int(x) for x in freeze_layers]
+    if any(x < 0 for x in freeze_layers):
+        raise ValueError("training.freeze_layers must contain non-negative integers")
     _ensure_local_checkpoint_compat(str(model_cfg.get("path", "")))
+    ext_module_name = _write_freeze_ext_module(SCRIPT_DIR)
 
     data_dir = Path(data_cfg["output_dir"])
     train_parquet = data_dir / "train.parquet"
@@ -850,7 +946,7 @@ def train(cfg: dict, config_path: str) -> None:
         f"actor_rollout_ref.model.enable_gradient_checkpointing={enable_grad_ckpt}",
         f"++actor_rollout_ref.model.override_config.attn_implementation={attn_impl}",
         f"actor_rollout_ref.model.use_fused_kernels={use_fused_kernels}",
-        "actor_rollout_ref.model.external_lib=vllm_deepseekocr2_patch",
+        f"actor_rollout_ref.model.external_lib={ext_module_name}",
         # Actor – GSPO-specific parameters
         f"actor_rollout_ref.actor.optim.lr={lr}",
         f"actor_rollout_ref.actor.optim.weight_decay={train_cfg.get('weight_decay', 0.1)}",
@@ -958,6 +1054,7 @@ def train(cfg: dict, config_path: str) -> None:
         env["CHEMSEEK_VLLM_CODE_DIR"] = vllm_code_dir
     env["CHEMSEEK_MODEL_PATH"] = str(model_cfg["path"])
     env["CHEMSEEK_PROMPT"] = str(data_cfg.get("instruction", "<image>\n Give me the SMILES of the molecule. "))
+    env["CHEMSEEK_FREEZE_LAYERS"] = ",".join(str(x) for x in freeze_layers)
 
     if wandb_cfg.get("enabled", False):
         api_key = wandb_cfg.get("api_key") or os.environ.get("WANDB_API_KEY")
@@ -979,6 +1076,7 @@ def train(cfg: dict, config_path: str) -> None:
     print(f"Group size:       {group_size}")
     print(f"Batch size:       {train_batch}")
     print(f"LR:               {lr}")
+    print(f"Freeze layers:    {freeze_layers if freeze_layers else '[] (disabled)'}")
     print(f"Epochs:           {epochs}")
     print(f"Validation:       {validation_enabled} (test_freq={test_freq})")
     print(f"Val data:         {val_file_for_cmd}")

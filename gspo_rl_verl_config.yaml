@@ -63,6 +63,9 @@ training:
   train_batch_size: 8
   ppo_mini_batch_size: 4
   ppo_micro_batch_size_per_gpu: 2
+  # Freeze language decoder layers by index, e.g. [0,1,2].
+  # Matches prefixes like model.layers.{idx}.*
+  freeze_layers: []
   learning_rate: 0.00001
   weight_decay: 0.1
   clip_grad: 1.0
