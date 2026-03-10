@@ -100,6 +100,60 @@ def _resolve_path(path_str: str, base_dir: Optional[Path] = None) -> str:
     return str(p.resolve())
 
 
+def _stringify_hydra_value(value: Any) -> str:
+    """Convert a YAML value to Hydra CLI literal."""
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if value is None:
+        return "null"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _collect_hydra_cli_overrides(cfg: dict) -> Dict[str, str]:
+    """Collect overrides from YAML using original Hydra dotted names.
+
+    Supports:
+      1) top-level dotted keys: {"actor_rollout_ref.rollout.n": 5}
+      2) grouped mapping: {"hydra_cli_overrides": {...}}
+    """
+    out: Dict[str, str] = {}
+
+    grouped = cfg.get("hydra_cli_overrides", {})
+    if isinstance(grouped, dict):
+        for k, v in grouped.items():
+            if isinstance(k, str) and "." in k:
+                out[k] = _stringify_hydra_value(v)
+
+    for k, v in cfg.items():
+        if isinstance(k, str) and "." in k:
+            out[k] = _stringify_hydra_value(v)
+    return out
+
+
+def _apply_hydra_cli_overrides(cmd: list[str], overrides: Dict[str, str]) -> list[str]:
+    """Apply Hydra dotted-key overrides onto an existing CLI list."""
+    if not overrides:
+        return cmd
+
+    key_to_idx: Dict[str, int] = {}
+    for i, item in enumerate(cmd):
+        if "=" in item:
+            key, _ = item.split("=", 1)
+            key_to_idx[key] = i
+
+    for key, value in overrides.items():
+        entry = f"{key}={value}"
+        if key in key_to_idx:
+            cmd[key_to_idx[key]] = entry
+        else:
+            cmd.append(entry)
+    return cmd
+
+
 def load_yaml_config(path: str) -> dict:
     config_path = Path(path).resolve()
     with open(config_path, "r", encoding="utf-8") as f:
@@ -839,24 +893,17 @@ def _write_freeze_ext_module(target_dir: Path) -> str:
 
 
 def train(cfg: dict, config_path: str) -> None:
-    """Build verl GSPO config overrides and launch training."""
+    """Launch verl GSPO with YAML-provided Hydra overrides."""
 
     _assert_target_runtime_versions()
     _ensure_transformers_compat()
 
     model_cfg = cfg.get("model", {})
     data_cfg = cfg.get("data", {})
-    train_cfg = cfg.get("training", {})
-    gspo_cfg = cfg.get("gspo", {})
-    rollout_cfg = cfg.get("rollout", {})
-    gpu_cfg = cfg.get("gpu", {})
-    rw_cfg = cfg.get("reward_weights", {})
-    reward_debug_cfg = cfg.get("reward_debug", {})
     wandb_cfg = cfg.get("wandb", {})
-    val_cfg = cfg.get("validation", {})
     output_dir = cfg.get("output_dir", str(SCRIPT_DIR / "weight_gspo_rl_verl"))
-    freeze_layers = train_cfg.get("freeze_layers", []) or []
-    freeze_modules = train_cfg.get("freeze_modules", []) or []
+    freeze_layers = cfg.get("freeze_layers", cfg.get("training", {}).get("freeze_layers", [])) or []
+    freeze_modules = cfg.get("freeze_modules", cfg.get("training", {}).get("freeze_modules", [])) or []
     if not isinstance(freeze_layers, list):
         raise ValueError("training.freeze_layers must be a list, e.g. [0,1,2]")
     if not isinstance(freeze_modules, list):
@@ -870,7 +917,8 @@ def train(cfg: dict, config_path: str) -> None:
 
     data_dir = Path(data_cfg["output_dir"])
     train_parquet = data_dir / "train.parquet"
-    val_parquet = Path(val_cfg.get("val_parquet") or (data_dir / "val.parquet"))
+    val_parquet_cfg = cfg.get("val_parquet", cfg.get("validation", {}).get("val_parquet"))
+    val_parquet = Path(val_parquet_cfg) if val_parquet_cfg else (data_dir / "val.parquet")
 
     if not train_parquet.is_file():
         print(f"Error: Training data not found at {train_parquet}")
@@ -879,12 +927,7 @@ def train(cfg: dict, config_path: str) -> None:
 
     script_path = str(SCRIPT_DIR / "gspo_rl_verl.py")
 
-    n_gpus = gpu_cfg.get("n_gpus_per_node", 4)
-    tp_size = gpu_cfg.get("tensor_model_parallel_size", 2)
-    gpu_mem_util = gpu_cfg.get("vllm_gpu_memory_utilization", 0.5)
     vllm_architecture = str(model_cfg.get("vllm_architecture", "DeepseekOCR2ForCausalLM"))
-    enable_grad_ckpt = bool(model_cfg.get("enable_gradient_checkpointing", True))
-    attn_impl = str(model_cfg.get("attn_implementation", "flash_attention_2"))
     use_fused_kernels = bool(model_cfg.get("use_fused_kernels", False))
     if use_fused_kernels and "deepseekocr2" in vllm_architecture.lower():
         print(
@@ -906,183 +949,28 @@ def train(cfg: dict, config_path: str) -> None:
             vllm_code_dir = str(fallback_vllm_dir.resolve())
     _ensure_deepseek_ocr2_vllm_compat(vllm_code_dir)
 
-    train_batch = train_cfg.get("train_batch_size", n_gpus * 4)
-    micro_bs = train_cfg.get("ppo_micro_batch_size_per_gpu", 1)
-    mini_bs = train_cfg.get("ppo_mini_batch_size", train_batch)
-
-    group_size = gspo_cfg.get("group_size", 8)
-    rollout_temperature = float(rollout_cfg.get("temperature", 1.0))
-    rollout_top_p = float(rollout_cfg.get("top_p", 1.0))
-    val_rollout_temperature = float(
-        rollout_cfg.get("val_temperature", rollout_temperature)
-    )
-    val_rollout_top_p = float(rollout_cfg.get("val_top_p", rollout_top_p))
-    val_rollout_n = int(rollout_cfg.get("val_n", 1))
-
-    # verl normalizes: effective = mini_bs * group_size // n_gpus
-    # it must be divisible by micro_bs
-    from math import gcd
-    unit = n_gpus * micro_bs
-    step_mini = unit // gcd(group_size, unit)
-    if mini_bs % step_mini != 0:
-        orig = mini_bs
-        mini_bs = max(step_mini, (mini_bs // step_mini) * step_mini)
-        print(f"[auto-fix] ppo_mini_batch_size {orig} -> {mini_bs} "
-              f"(must be a multiple of {step_mini} for {n_gpus} GPUs, "
-              f"group_size={group_size}, micro_bs={micro_bs})")
-    step_tb = n_gpus // gcd(group_size, n_gpus)
-    if train_batch % step_tb != 0:
-        orig = train_batch
-        train_batch = max(step_tb, (train_batch // step_tb) * step_tb)
-        print(f"[auto-fix] train_batch_size {orig} -> {train_batch} "
-              f"(must be a multiple of {step_tb} for {n_gpus} GPUs, "
-              f"group_size={group_size})")
-    if mini_bs > train_batch:
-        mini_bs = train_batch
-        print(f"[auto-fix] ppo_mini_batch_size clamped to train_batch_size={train_batch}")
-    clip_ratio_low = gspo_cfg.get("clip_ratio_low", 3e-4)
-    clip_ratio_high = gspo_cfg.get("clip_ratio_high", 4e-4)
-    clip_ratio_c = gspo_cfg.get("clip_ratio_c", 10.0)
-    use_kl_loss = gspo_cfg.get("use_kl_loss", False)
-    kl_coef = gspo_cfg.get("kl_loss_coef", 0.0)
-    loss_agg_mode = gspo_cfg.get("loss_agg_mode", "seq-mean-token-mean")
-    use_dynamic_bsz = gspo_cfg.get("use_dynamic_bsz", True)
-
-    lr = train_cfg.get("learning_rate", 1e-6)
-    epochs = train_cfg.get("total_epochs", 10)
-    save_freq = cfg.get("save_freq", 50)
-    validation_enabled = bool(val_cfg.get("enabled", True))
-    test_freq = int(val_cfg.get("test_freq", cfg.get("test_freq", 5))) if validation_enabled else -1
-    val_before_train = bool(val_cfg.get("val_before_train", False)) if validation_enabled else False
-
-    if validation_enabled:
-        if not val_parquet.is_file():
-            print(f"Error: Validation data not found at {val_parquet}")
-            print("Either prepare val parquet, set validation.val_parquet, or set validation.enabled=false.")
-            sys.exit(1)
-        val_file_for_cmd = val_parquet
-    else:
-        # Keep a valid file path even when validation is disabled; trainer won't evaluate when test_freq=-1.
-        val_file_for_cmd = train_parquet
-
-    max_prompt_len = data_cfg.get("max_prompt_length", 4096)
-    max_resp_len = data_cfg.get("max_response_length", 128)
-
-    token_multiplier = float(train_cfg.get("actor_token_len_multiplier", 1.0))
-    actor_max_token_len_per_gpu = int((max_prompt_len + max_resp_len) * token_multiplier)
-
-    param_offload = str(gpu_cfg.get("param_offload", False))
-    optim_offload = str(gpu_cfg.get("optimizer_offload", False))
-    ref_offload = str(gpu_cfg.get("ref_param_offload", True))
-    fsdp_model_dtype = str(gpu_cfg.get("fsdp_model_dtype", "bf16"))
-    gradient_precision = str(train_cfg.get("gradient_precision", "fp32"))
-
     logger_list = '["console"]'
     if wandb_cfg.get("enabled", False):
         logger_list = '["console","wandb"]'
 
+    val_file_for_cmd = val_parquet if val_parquet.is_file() else train_parquet
+
     cmd = [
         sys.executable, str(SCRIPT_DIR / "verl_main_ppo_compat.py"),
-        # Algorithm: GSPO uses GRPO advantage estimator with gspo loss mode
-        "algorithm.adv_estimator=grpo",
-        "algorithm.norm_adv_by_std_in_grpo=True",
-        "algorithm.use_kl_in_reward=False",
-        f"algorithm.kl_ctrl.kl_coef={kl_coef}",
-        # Model
+        # Core paths/integration only; hyperparameters come from hydra_cli_overrides
         f"actor_rollout_ref.model.path={model_cfg['path']}",
-        "actor_rollout_ref.model.trust_remote_code=True",
-        f"actor_rollout_ref.model.enable_gradient_checkpointing={enable_grad_ckpt}",
-        f"++actor_rollout_ref.model.override_config.attn_implementation={attn_impl}",
+        f"++actor_rollout_ref.rollout.engine_kwargs.vllm.hf_overrides.architectures=[\"{vllm_architecture}\"]",
         f"actor_rollout_ref.model.use_fused_kernels={use_fused_kernels}",
         f"actor_rollout_ref.model.external_lib={ext_module_name}",
-        # Actor – GSPO-specific parameters
-        f"actor_rollout_ref.actor.optim.lr={lr}",
-        f"actor_rollout_ref.actor.optim.weight_decay={train_cfg.get('weight_decay', 0.1)}",
-        f"actor_rollout_ref.actor.optim.clip_grad={train_cfg.get('clip_grad', 1.0)}",
-        "actor_rollout_ref.actor.policy_loss.loss_mode=gspo",
-        f"actor_rollout_ref.actor.loss_agg_mode={loss_agg_mode}",
-        f"actor_rollout_ref.actor.clip_ratio_low={clip_ratio_low}",
-        f"actor_rollout_ref.actor.clip_ratio_high={clip_ratio_high}",
-        f"actor_rollout_ref.actor.clip_ratio_c={clip_ratio_c}",
-        f"actor_rollout_ref.actor.use_kl_loss={use_kl_loss}",
-        f"actor_rollout_ref.actor.kl_loss_coef={kl_coef}",
-        f"actor_rollout_ref.actor.use_dynamic_bsz={use_dynamic_bsz}",
-        f"actor_rollout_ref.actor.ppo_mini_batch_size={mini_bs}",
-        f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={micro_bs}",
-        f"actor_rollout_ref.actor.ppo_max_token_len_per_gpu={actor_max_token_len_per_gpu}",
-        "actor_rollout_ref.actor.entropy_coeff=0",
-        "actor_rollout_ref.actor.ppo_epochs=1",
-        "actor_rollout_ref.actor.freeze_vision_tower=True",
-        f"actor_rollout_ref.actor.fsdp_config.param_offload={param_offload}",
-        f"actor_rollout_ref.actor.fsdp_config.optimizer_offload={optim_offload}",
-        "actor_rollout_ref.actor.fsdp_config.use_orig_params=True",
-        f"actor_rollout_ref.actor.fsdp_config.model_dtype={fsdp_model_dtype}",
-        f"+actor_rollout_ref.actor.fsdp_config.mixed_precision.param_dtype={fsdp_model_dtype}",
-        f"+actor_rollout_ref.actor.fsdp_config.mixed_precision.reduce_dtype={gradient_precision}",
-        f"+actor_rollout_ref.actor.fsdp_config.mixed_precision.buffer_dtype={gradient_precision}",
-        # Rollout (vLLM)
-        "actor_rollout_ref.rollout.name=vllm",
-        f"++actor_rollout_ref.rollout.engine_kwargs.vllm.hf_overrides.architectures=[\"{vllm_architecture}\"]",
-        f"actor_rollout_ref.rollout.tensor_model_parallel_size={tp_size}",
-        f"actor_rollout_ref.rollout.gpu_memory_utilization={gpu_mem_util}",
-        f"actor_rollout_ref.rollout.n={group_size}",
-        f"actor_rollout_ref.rollout.temperature={rollout_temperature}",
-        f"actor_rollout_ref.rollout.top_p={rollout_top_p}",
-        f"actor_rollout_ref.rollout.val_kwargs.temperature={val_rollout_temperature}",
-        f"actor_rollout_ref.rollout.val_kwargs.top_p={val_rollout_top_p}",
-        f"actor_rollout_ref.rollout.val_kwargs.n={val_rollout_n}",
-        "actor_rollout_ref.rollout.enable_chunked_prefill=False",
-        "actor_rollout_ref.rollout.enforce_eager=True",
-        "actor_rollout_ref.rollout.free_cache_engine=True",
-        f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={micro_bs}",
-        # Reference model
-        f"actor_rollout_ref.ref.fsdp_config.param_offload={ref_offload}",
-        f"actor_rollout_ref.ref.fsdp_config.model_dtype={fsdp_model_dtype}",
-        f"+actor_rollout_ref.ref.fsdp_config.mixed_precision.param_dtype={fsdp_model_dtype}",
-        f"+actor_rollout_ref.ref.fsdp_config.mixed_precision.reduce_dtype={gradient_precision}",
-        f"+actor_rollout_ref.ref.fsdp_config.mixed_precision.buffer_dtype={gradient_precision}",
-        f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={micro_bs}",
-        # Data
         f"data.train_files={train_parquet}",
         f"data.val_files={val_file_for_cmd}",
-        f"data.train_batch_size={train_batch}",
-        f"data.max_prompt_length={max_prompt_len}",
-        f"data.max_response_length={max_resp_len}",
-        "data.return_raw_chat=True",
-        "data.filter_overlong_prompts=True",
-        "data.filter_overlong_prompts_workers=16",
-        "data.truncation=error",
-        "data.image_key=images",
-        "data.trust_remote_code=True",
         f"data.custom_cls.path={script_path}",
-        "data.custom_cls.name=ChemSeekOCRDataset",
-        # Reward (verl>=0.6.1): use reward_model + custom_reward_function
-        "reward_model.reward_manager=naive",
         f"custom_reward_function.path={script_path}",
-        "custom_reward_function.name=compute_score",
-        f"+custom_reward_function.reward_kwargs.reward_weights.validity={rw_cfg.get('validity', 2.0)}",
-        f"+custom_reward_function.reward_kwargs.reward_weights.tanimoto={rw_cfg.get('tanimoto', 1.0)}",
-        f"+custom_reward_function.reward_kwargs.reward_weights.canon_smiles={rw_cfg.get('canon_smiles', 2.0)}",
-        f"+custom_reward_function.reward_kwargs.reward_weights.graph={rw_cfg.get('graph', 1.5)}",
-        f"+custom_reward_function.reward_kwargs.reward_weights.chiral={rw_cfg.get('chiral', 1.5)}",
-        f"+custom_reward_function.reward_kwargs.chiral_no_annotation_reward={cfg.get('chiral_no_annotation_reward', 1.0)}",
-        f"+custom_reward_function.reward_kwargs.reward_debug={bool(reward_debug_cfg.get('enabled', False))}",
-        f"+custom_reward_function.reward_kwargs.reward_debug_every_n={int(reward_debug_cfg.get('every_n', 1))}",
-        f"+custom_reward_function.reward_kwargs.reward_debug_max_prints={int(reward_debug_cfg.get('max_prints', 2000))}",
-        f"+custom_reward_function.reward_kwargs.reward_debug_only_invalid={bool(reward_debug_cfg.get('only_invalid', False))}",
-        # Trainer
-        "trainer.critic_warmup=0",
         f"trainer.logger={logger_list}",
-        f"trainer.project_name={wandb_cfg.get('project', 'ChemSeek-OCR')}",
-        f"trainer.experiment_name={wandb_cfg.get('run_name', 'gspo-verl')}",
-        f"trainer.n_gpus_per_node={n_gpus}",
-        "trainer.nnodes=1",
-        f"trainer.save_freq={save_freq}",
-        f"trainer.test_freq={test_freq}",
-        f"trainer.total_epochs={epochs}",
         f"trainer.default_local_dir={output_dir}",
-        f"trainer.val_before_train={val_before_train}",
     ]
+    hydra_overrides = _collect_hydra_cli_overrides(cfg)
+    cmd = _apply_hydra_cli_overrides(cmd, hydra_overrides)
 
     env = os.environ.copy()
     pythonpath_parts = [str(SCRIPT_DIR)]
@@ -1093,7 +981,7 @@ def train(cfg: dict, config_path: str) -> None:
         pythonpath_parts.append(old_pythonpath)
     env["PYTHONPATH"] = ":".join(pythonpath_parts)
 
-    if train_cfg.get("allow_tf32", True):
+    if bool(cfg.get("allow_tf32", cfg.get("training", {}).get("allow_tf32", True))):
         env.setdefault("NVIDIA_TF32_OVERRIDE", "1")
     # vLLM's CuMemAllocator is incompatible with expandable_segments.
     if "PYTORCH_CUDA_ALLOC_CONF" in env and "expandable_segments:True" in env["PYTORCH_CUDA_ALLOC_CONF"]:
@@ -1111,38 +999,44 @@ def train(cfg: dict, config_path: str) -> None:
         if api_key:
             env["WANDB_API_KEY"] = api_key
 
-    gpu_ids = gpu_cfg.get("gpu_ids")
+    gpu_ids = cfg.get("gpu_ids", cfg.get("gpu", {}).get("gpu_ids"))
     if gpu_ids is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu_ids)
+
+    def _ov(key: str, default: str = "<auto>") -> str:
+        return hydra_overrides.get(key, default)
 
     print("=" * 72)
     print("Launching verl GSPO training")
     print("=" * 72)
     print(f"Model:            {model_cfg['path']}")
     print(f"Train data:       {train_parquet}")
-    print(f"GPUs:             {n_gpus} (TP={tp_size})")
+    print(
+        "GPUs/TP:          "
+        f"{_ov('trainer.n_gpus_per_node')} / {_ov('actor_rollout_ref.rollout.tensor_model_parallel_size')}"
+    )
     print(f"vLLM arch:        {vllm_architecture}")
     print(f"vLLM code dir:    {vllm_code_dir}")
-    print(f"Group size:       {group_size}")
-    print(f"Batch size:       {train_batch}")
-    print(f"LR:               {lr}")
+    print(f"Group size:       {_ov('actor_rollout_ref.rollout.n')}")
+    print(f"Batch size:       {_ov('data.train_batch_size')}")
+    print(f"LR:               {_ov('actor_rollout_ref.actor.optim.lr')}")
     print(f"Freeze layers:    {freeze_layers if freeze_layers else '[] (disabled)'}")
     print(f"Freeze modules:   {freeze_modules if freeze_modules else '[] (disabled)'}")
-    print(f"Epochs:           {epochs}")
-    print(f"Validation:       {validation_enabled} (test_freq={test_freq})")
-    print(f"Val data:         {val_file_for_cmd}")
-    print(f"GSPO clip_low:    {clip_ratio_low}")
-    print(f"GSPO clip_high:   {clip_ratio_high}")
-    print(f"GSPO clip_c:      {clip_ratio_c}")
-    print(f"Loss agg mode:    {loss_agg_mode}")
-    print(f"KL loss:          {use_kl_loss} (coef={kl_coef})")
+    print(f"Epochs:           {_ov('trainer.total_epochs')}")
     print(
-        "Reward debug:     "
-        f"{bool(reward_debug_cfg.get('enabled', False))} "
-        f"(every_n={int(reward_debug_cfg.get('every_n', 1))}, "
-        f"max_prints={int(reward_debug_cfg.get('max_prints', 2000))}, "
-        f"only_invalid={bool(reward_debug_cfg.get('only_invalid', False))})"
+        "Validation:       "
+        f"test_freq={_ov('trainer.test_freq')} val_before_train={_ov('trainer.val_before_train')}"
     )
+    print(f"Val data:         {val_file_for_cmd}")
+    print(f"GSPO clip_low:    {_ov('actor_rollout_ref.actor.clip_ratio_low')}")
+    print(f"GSPO clip_high:   {_ov('actor_rollout_ref.actor.clip_ratio_high')}")
+    print(f"GSPO clip_c:      {_ov('actor_rollout_ref.actor.clip_ratio_c')}")
+    print(f"Loss agg mode:    {_ov('actor_rollout_ref.actor.loss_agg_mode')}")
+    print(
+        "KL loss:          "
+        f"{_ov('actor_rollout_ref.actor.use_kl_loss')} (coef={_ov('actor_rollout_ref.actor.kl_loss_coef')})"
+    )
+    print(f"Reward debug:     {_ov('+custom_reward_function.reward_kwargs.reward_debug')}")
     print(f"Output:           {output_dir}")
     print("=" * 72)
     print("Command:")
