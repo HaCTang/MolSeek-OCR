@@ -94,8 +94,8 @@ hydra_cli_overrides:
   "actor_rollout_ref.actor.use_kl_loss": false
   "actor_rollout_ref.actor.kl_loss_coef": 0.0
   "actor_rollout_ref.actor.use_dynamic_bsz": true
-  "actor_rollout_ref.actor.ppo_mini_batch_size": 4
-  "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu": 2
+  "actor_rollout_ref.actor.ppo_mini_batch_size": 8
+  "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu": 4
   "actor_rollout_ref.actor.ppo_max_token_len_per_gpu": 2176
   "actor_rollout_ref.actor.entropy_coeff": 0
   "actor_rollout_ref.actor.ppo_epochs": 1
@@ -111,7 +111,7 @@ hydra_cli_overrides:
   "actor_rollout_ref.rollout.name": vllm
   "actor_rollout_ref.rollout.tensor_model_parallel_size": 2
   "actor_rollout_ref.rollout.max_model_len": 2048
-  "actor_rollout_ref.rollout.gpu_memory_utilization": 0.3
+  "actor_rollout_ref.rollout.gpu_memory_utilization": 0.4
   "actor_rollout_ref.rollout.n": 5
   "actor_rollout_ref.rollout.temperature": 0.0
   "actor_rollout_ref.rollout.top_p": 1.0
@@ -130,7 +130,7 @@ hydra_cli_overrides:
   "+actor_rollout_ref.ref.fsdp_config.mixed_precision.buffer_dtype": fp32
   "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu": 2
 
-  "data.train_batch_size": 8
+  "data.train_batch_size": 16
   "data.max_prompt_length": 2048
   "data.max_response_length": 128
   "data.return_raw_chat": true
