@@ -95,8 +95,8 @@ hydra_cli_overrides:
   "actor_rollout_ref.actor.kl_loss_coef": 0.0
   "actor_rollout_ref.actor.use_dynamic_bsz": true
   "actor_rollout_ref.actor.ppo_mini_batch_size": 8
-  "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu": 4
-  "actor_rollout_ref.actor.ppo_max_token_len_per_gpu": 2176
+  "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu": 1
+  "actor_rollout_ref.actor.ppo_max_token_len_per_gpu": 6144
   "actor_rollout_ref.actor.entropy_coeff": 0
   "actor_rollout_ref.actor.ppo_epochs": 1
   "actor_rollout_ref.actor.freeze_vision_tower": true
@@ -110,7 +110,7 @@ hydra_cli_overrides:
 
   "actor_rollout_ref.rollout.name": vllm
   "actor_rollout_ref.rollout.tensor_model_parallel_size": 2
-  "actor_rollout_ref.rollout.max_model_len": 2048
+  "actor_rollout_ref.rollout.max_model_len": 4096
   "actor_rollout_ref.rollout.gpu_memory_utilization": 0.4
   "actor_rollout_ref.rollout.n": 5
   "actor_rollout_ref.rollout.temperature": 0.0
@@ -131,13 +131,13 @@ hydra_cli_overrides:
   "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu": 2
 
   "data.train_batch_size": 16
-  "data.max_prompt_length": 2048
+  "data.max_prompt_length": 4096
   "data.max_response_length": 128
   "data.return_raw_chat": true
   "data.filter_overlong_prompts": true
   "data.filter_overlong_prompts_workers": 16
   "data.truncation": error
-  "data.image_key": images
+  "data.image_key": image
   "data.trust_remote_code": true
   "data.custom_cls.name": ChemSeekOCRDataset
 

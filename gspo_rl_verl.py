@@ -416,14 +416,49 @@ class ChemSeekOCRDataset(Dataset):
         self.max_prompt_length = int(getattr(config, "max_prompt_length", 4096))
         self.truncation = str(getattr(config, "truncation", "error"))
         self.return_raw_chat = bool(getattr(config, "return_raw_chat", True))
+        # DeepSeek-OCR2-vLLM registers the modality name as "image".
+        self.image_key = str(getattr(config, "image_key", "image") or "image")
         self.apply_chat_template_kwargs = dict(getattr(config, "apply_chat_template_kwargs", {}))
         print(f"[ChemSeekOCRDataset] loaded {len(self.data)} samples")
 
     def __len__(self) -> int:
         return len(self.data)
 
+    @staticmethod
+    def _ensure_config_module():
+        """Inject a synthetic 'config' module so that DeepseekOCR2Processor
+        uses the correct PROMPT and TOKENIZER (same trick as evaluation.py).
+        Without this, the default config.py has a document-OCR prompt and wrong
+        tokenizer, so the model never receives correct image context."""
+        import sys, types
+        if "config" in sys.modules and getattr(sys.modules["config"], "_chemseek_injected", False):
+            return
+        model_path = os.environ.get("CHEMSEEK_MODEL_PATH", "deepseek-ai/DeepSeek-OCR-2")
+        prompt = os.environ.get("CHEMSEEK_PROMPT", "<image>\n Give me the SMILES of the molecule. ")
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        config_mod = types.ModuleType("config")
+        config_mod.BASE_SIZE = 1024
+        config_mod.IMAGE_SIZE = 768
+        config_mod.CROP_MODE = True
+        config_mod.MIN_CROPS = 2
+        config_mod.MAX_CROPS = 6
+        config_mod.MAX_CONCURRENCY = 100
+        config_mod.NUM_WORKERS = 64
+        config_mod.PRINT_NUM_VIS_TOKENS = False
+        config_mod.SKIP_REPEAT = True
+        config_mod.MODEL_PATH = model_path
+        config_mod.INPUT_PATH = ""
+        config_mod.OUTPUT_PATH = ""
+        config_mod.PROMPT = prompt
+        config_mod.TOKENIZER = tokenizer
+        config_mod._chemseek_injected = True
+        sys.modules["config"] = config_mod
+        print(f"[ChemSeekOCRDataset] Injected config module: PROMPT={repr(prompt[:60])}")
+
     def _build_deepseek_mm_payload(self, image):
         """Build DeepSeek-OCR2-vllm expected multimodal image payload."""
+        self._ensure_config_module()
         if not hasattr(self, "_deepseek_mm_processor"):
             self._deepseek_mm_processor = None
         if self._deepseek_mm_processor is None:
@@ -497,25 +532,26 @@ class ChemSeekOCRDataset(Dataset):
             except (json.JSONDecodeError, TypeError):
                 reward_model = {"ground_truth": reward_model}
 
-        if self.processor is not None:
-            raw_prompt = self.processor.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                tokenize=False,
-                **self.apply_chat_template_kwargs,
-            )
-            model_inputs = self.processor(
-                text=[raw_prompt],
-                images=[image.convert("RGB")],
-                return_tensors="pt",
-            )
-        else:
-            raw_prompt = self._messages_to_plain_prompt(messages)
-            model_inputs = self.tokenizer(raw_prompt, return_tensors="pt", add_special_tokens=False)
-        multi_modal_data = {"image": self._build_deepseek_mm_payload(image)}
+        # Keep RL rollout prompt format aligned with SFT/eval:
+        # a single "<image>" token followed by instruction text.
+        raw_prompt = self._messages_to_plain_prompt(messages)
+        if "<image>" not in raw_prompt:
+            raw_prompt = "<image>\n Give me the SMILES of the molecule. "
 
+        model_inputs = self.tokenizer(
+            raw_prompt,
+            return_tensors="pt",
+            add_special_tokens=True,
+        )
+        mm_payload = self._build_deepseek_mm_payload(image)
         input_ids = model_inputs.pop("input_ids")
         attention_mask = model_inputs.pop("attention_mask")
+
+        multi_modal_data = {self.image_key: mm_payload}
+        if self.image_key != "image":
+            # The DeepSeek-OCR2-vLLM plugin expects "image" as modality key.
+            multi_modal_data["image"] = mm_payload
+
         input_ids, attention_mask = verl_F.postprocess_data(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -526,7 +562,28 @@ class ChemSeekOCRDataset(Dataset):
         )
         position_ids = compute_position_id_with_mask(attention_mask)
 
-        raw_prompt_ids = self.tokenizer.encode(raw_prompt, add_special_tokens=False)
+        raw_prompt_ids = self.tokenizer.encode(raw_prompt, add_special_tokens=True)
+        image_token_id = getattr(self.tokenizer, "vocab", {}).get("<image>")
+        if image_token_id is not None and image_token_id not in raw_prompt_ids:
+            fallback_prompt = "<image>\n Give me the SMILES of the molecule. "
+            raw_prompt = fallback_prompt
+            raw_prompt_ids = self.tokenizer.encode(raw_prompt, add_special_tokens=True)
+            model_inputs = self.tokenizer(
+                raw_prompt,
+                return_tensors="pt",
+                add_special_tokens=True,
+            )
+            input_ids = model_inputs.pop("input_ids")
+            attention_mask = model_inputs.pop("attention_mask")
+            input_ids, attention_mask = verl_F.postprocess_data(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_length=self.max_prompt_length,
+                pad_token_id=self.tokenizer.pad_token_id,
+                left_pad=True,
+                truncation=self.truncation,
+            )
+            position_ids = compute_position_id_with_mask(attention_mask)
         if len(raw_prompt_ids) > self.max_prompt_length:
             if self.truncation == "left":
                 raw_prompt_ids = raw_prompt_ids[-self.max_prompt_length:]
@@ -651,6 +708,46 @@ _FREEZE_EXT_MODULE_NAME = "_chemseek_gspo_freeze"
 _FREEZE_EXT_CODE = '''\
 """Auto-generated external_lib for verl: DeepSeek OCR2 patch + layer freezing."""
 import os
+import sys
+import types
+
+# ---------------------------------------------------------------------------
+# Inject a synthetic "config" module BEFORE any DeepSeek-OCR2-vllm imports.
+# Without this, the default config.py uses a document-OCR prompt and a
+# wrong tokenizer, causing the model to never receive correct image context.
+# This mirrors evaluation.py._setup_vllm_env().
+# ---------------------------------------------------------------------------
+def _setup_config_module():
+    if "config" in sys.modules and getattr(sys.modules["config"], "_chemseek_injected", False):
+        return
+    model_path = os.environ.get("CHEMSEEK_MODEL_PATH", "deepseek-ai/DeepSeek-OCR-2")
+    prompt = os.environ.get("CHEMSEEK_PROMPT", "<image>\\n Give me the SMILES of the molecule. ")
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    config_mod = types.ModuleType("config")
+    config_mod.BASE_SIZE = 1024
+    config_mod.IMAGE_SIZE = 768
+    config_mod.CROP_MODE = True
+    config_mod.MIN_CROPS = 2
+    config_mod.MAX_CROPS = 6
+    config_mod.MAX_CONCURRENCY = 100
+    config_mod.NUM_WORKERS = 64
+    config_mod.PRINT_NUM_VIS_TOKENS = False
+    config_mod.SKIP_REPEAT = True
+    config_mod.MODEL_PATH = model_path
+    config_mod.INPUT_PATH = ""
+    config_mod.OUTPUT_PATH = ""
+    config_mod.PROMPT = prompt
+    config_mod.TOKENIZER = tokenizer
+    config_mod._chemseek_injected = True
+    sys.modules["config"] = config_mod
+    print(
+        f"[GSPO config] Injected config module: "
+        f"MODEL_PATH={model_path}, PROMPT={repr(prompt[:60])}"
+    )
+
+_setup_config_module()
+
 from transformers import AutoModel, AutoModelForCausalLM
 
 try:
