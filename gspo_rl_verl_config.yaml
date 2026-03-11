@@ -63,7 +63,7 @@ gpu_ids: "0,1,2,3,4,5,6,7,8,9"
 # Optional. If unset, use <data.output_dir>/val.parquet when present, else train.parquet.
 val_parquet: null
 # Freeze settings are consumed by external_lib patch logic.
-freeze_layers: [0]
+freeze_layers: []
 freeze_modules:
   - model.sam_model
   - model.embed_tokens
@@ -113,7 +113,7 @@ hydra_cli_overrides:
   "actor_rollout_ref.rollout.max_model_len": 4096
   "actor_rollout_ref.rollout.gpu_memory_utilization": 0.6
   "actor_rollout_ref.rollout.n": 5
-  "actor_rollout_ref.rollout.temperature": 0.2
+  "actor_rollout_ref.rollout.temperature": 0.1
   "actor_rollout_ref.rollout.top_p": 0.95
   "actor_rollout_ref.rollout.val_kwargs.temperature": 0.0
   "actor_rollout_ref.rollout.val_kwargs.top_p": 1.0
@@ -143,16 +143,16 @@ hydra_cli_overrides:
 
   "reward_model.reward_manager": naive
   "custom_reward_function.name": compute_score
-  "+custom_reward_function.reward_kwargs.reward_weights.validity": 2.0
-  "+custom_reward_function.reward_kwargs.reward_weights.tanimoto": 2.0
-  "+custom_reward_function.reward_kwargs.reward_weights.canon_smiles": 1.0
+  "+custom_reward_function.reward_kwargs.reward_weights.validity": 1.0
+  "+custom_reward_function.reward_kwargs.reward_weights.tanimoto": 3.0
+  "+custom_reward_function.reward_kwargs.reward_weights.canon_smiles": 0.0
   "+custom_reward_function.reward_kwargs.reward_weights.graph": 2.0
   "+custom_reward_function.reward_kwargs.reward_weights.chiral": 1.0
   "+custom_reward_function.reward_kwargs.chiral_no_annotation_reward": 0.0
   "trainer.critic_warmup": 0
   "trainer.n_gpus_per_node": 10
   "trainer.nnodes": 1
-  "trainer.save_freq": 300
+  "trainer.save_freq": 200
   "trainer.test_freq": -1
   "trainer.total_epochs": 1
   "trainer.val_before_train": false
@@ -160,7 +160,7 @@ hydra_cli_overrides:
   "trainer.experiment_name": gspo-verl-10gpu
 
 wandb:
-  enabled: false
+  enabled: true
   project: ChemSeek-OCR
   run_name: gspo-verl-10gpu
   api_key: null
