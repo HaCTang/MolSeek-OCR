@@ -3,6 +3,7 @@ import json
 import math
 import multiprocessing
 import os
+import shutil
 import subprocess
 import sys
 import types
@@ -66,6 +67,10 @@ class EvalConfig:
     num_gpus: int = 1
     # Explicit physical GPU ids, e.g. [1, 3]. If set, overrides num_gpus.
     gpu_ids: list[int] | None = None
+    # Auto-merge verl FSDP shard checkpoints to HF format when needed.
+    auto_merge_verl_fsdp: bool = False
+    # Target directory root for merged verl checkpoints.
+    verl_merged_dir: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +150,12 @@ def load_eval_config(config_path: str) -> EvalConfig:
         raw["merged_model_dir"] = _resolve_path(merged_model_dir, config_file.parent)
     else:
         raw["merged_model_dir"] = None
+    raw["auto_merge_verl_fsdp"] = bool(raw.get("auto_merge_verl_fsdp", False))
+    verl_merged_dir = raw.get("verl_merged_dir", None)
+    if verl_merged_dir not in (None, ""):
+        raw["verl_merged_dir"] = _resolve_path(verl_merged_dir, config_file.parent)
+    else:
+        raw["verl_merged_dir"] = None
 
     selected = raw.get("selected_benchmarks", None)
     if selected in (None, []):
@@ -237,18 +248,172 @@ def _find_latest_checkpoint(weight_root: str) -> str | None:
     if not path.is_dir():
         return None
     checkpoints = []
-    for ckpt in path.glob("checkpoint-*"):
-        if not ckpt.is_dir():
-            continue
-        try:
-            step = int(ckpt.name.split("-", 1)[1])
-        except (IndexError, ValueError):
-            continue
-        checkpoints.append((step, ckpt))
+    for pattern, sep in (("checkpoint-*", "-"), ("global_step_*", "_")):
+        for ckpt in path.glob(pattern):
+            if not ckpt.is_dir():
+                continue
+            try:
+                step = int(ckpt.name.split(sep, 1)[1])
+            except (IndexError, ValueError):
+                continue
+            checkpoints.append((step, ckpt))
     if not checkpoints:
         return None
     checkpoints.sort(key=lambda x: x[0])
     return str(checkpoints[-1][1])
+
+
+def _resolve_model_dir(checkpoint_path: str) -> str:
+    """Resolve model directory for different checkpoint layouts.
+
+    Supports:
+    - regular HF/LoRA checkpoints directly at checkpoint_path
+    - GSPO verl output layout: global_step_x/actor/huggingface
+    """
+    ckpt_dir = Path(checkpoint_path).resolve()
+    if not ckpt_dir.is_dir():
+        raise FileNotFoundError(f"Checkpoint path not found: {ckpt_dir}")
+
+    gspo_hf_dir = ckpt_dir / "actor" / "huggingface"
+    if gspo_hf_dir.is_dir():
+        return str(gspo_hf_dir)
+    return str(ckpt_dir)
+
+
+def _has_hf_weights(model_dir: str) -> bool:
+    path = Path(model_dir)
+    if not path.is_dir():
+        return False
+    if (path / "model.safetensors").is_file():
+        return True
+    if (path / "pytorch_model.bin").is_file():
+        return True
+    if (path / "model.safetensors.index.json").is_file():
+        return True
+    if (path / "pytorch_model.bin.index.json").is_file():
+        return True
+    if any(path.glob("*.safetensors")):
+        return True
+    if any(path.glob("pytorch_model*.bin")):
+        return True
+    return False
+
+
+def _merge_verl_fsdp_checkpoint(checkpoint_path: str, target_dir: str) -> str:
+    checkpoint_dir = Path(checkpoint_path).resolve()
+    local_dir = checkpoint_dir / "actor"
+    if not local_dir.is_dir():
+        raise FileNotFoundError(
+            f"Cannot find verl actor dir for merge: {local_dir}"
+        )
+
+    target = Path(target_dir).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+
+    # verl 0.6.x merger may fail on DeepSeek config with only auto_map.AutoModel.
+    # Build a lightweight local merge input and patch config for merger compatibility.
+    local_dir_for_merge = target.parent / "_merger_inputs" / checkpoint_dir.name / "actor"
+    if local_dir_for_merge.exists():
+        shutil.rmtree(local_dir_for_merge)
+    local_dir_for_merge.mkdir(parents=True, exist_ok=True)
+
+    for src in local_dir.glob("model_world_size_*_rank_*.pt"):
+        (local_dir_for_merge / src.name).symlink_to(src)
+    for name in ("fsdp_config.json",):
+        src = local_dir / name
+        if src.is_file():
+            (local_dir_for_merge / name).symlink_to(src)
+
+    src_hf_dir = local_dir / "huggingface"
+    dst_hf_dir = local_dir_for_merge / "huggingface"
+    shutil.copytree(src_hf_dir, dst_hf_dir)
+    cfg_path = dst_hf_dir / "config.json"
+    if cfg_path.is_file():
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg_data = json.load(f)
+        auto_map = cfg_data.get("auto_map", {})
+        architectures = cfg_data.get("architectures", []) or []
+        if (
+            isinstance(auto_map, dict)
+            and "AutoModel" in auto_map
+            and architectures
+            and "ForCausalLM" in str(architectures[0])
+        ):
+            auto_model_value = auto_map["AutoModel"]
+            auto_map["AutoModelForCausalLM"] = auto_model_value
+            # verl 0.6.x picks the first matching auto_map entry; if AutoModel points
+            # to the same class, it gets selected first and then raises NotImplementedError.
+            auto_map.pop("AutoModel", None)
+            cfg_data["auto_map"] = auto_map
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg_data, f, ensure_ascii=False, indent=2)
+            print("Patched merger config auto_map: keep AutoModelForCausalLM only")
+
+    base_cmd = [
+        sys.executable,
+        "-m",
+        "verl.model_merger",
+        "merge",
+        "--backend",
+        "fsdp",
+        "--local_dir",
+        str(local_dir_for_merge),
+        "--target_dir",
+        str(target),
+    ]
+    tried_cmds = [
+        base_cmd + ["--trust-remote-code"],
+        base_cmd + ["--trust_remote_code"],
+    ]
+    last_error: subprocess.CalledProcessError | None = None
+    for cmd in tried_cmds:
+        print(f"Merging verl FSDP checkpoint to HF: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True)
+            last_error = None
+            break
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            print(f"Merge command failed (exit={exc.returncode}), trying fallback if available...")
+    if last_error is not None:
+        raise last_error
+    if not _has_hf_weights(str(target)):
+        raise RuntimeError(
+            f"verl.model_merger finished but no HF weight file found under: {target}"
+        )
+    return str(target)
+
+
+def prepare_checkpoint_for_loading(cfg: EvalConfig, checkpoint_path: str) -> str:
+    """Ensure checkpoint is directly loadable by transformers/vLLM."""
+    model_dir = _resolve_model_dir(checkpoint_path)
+    if _has_hf_weights(model_dir):
+        return checkpoint_path
+
+    # Only full checkpoints can be merged from verl FSDP shards.
+    if cfg.full_or_lora != "full":
+        raise RuntimeError(
+            f"No HF weights found in {model_dir}, and full_or_lora={cfg.full_or_lora}. "
+            "If this is a verl FSDP checkpoint, set full_or_lora=full."
+        )
+
+    merge_root = Path(cfg.verl_merged_dir or (Path(cfg.output_dir) / "_merged_verl_fsdp")).resolve()
+    merged_target = merge_root / Path(checkpoint_path).name
+
+    if _has_hf_weights(str(merged_target)):
+        print(f"Using cached merged verl checkpoint: {merged_target}")
+        return str(merged_target)
+
+    if not cfg.auto_merge_verl_fsdp:
+        local_dir = Path(checkpoint_path).resolve() / "actor"
+        raise RuntimeError(
+            "No HF weights found in checkpoint. This appears to be a verl FSDP sharded checkpoint.\n"
+            "Please merge first, for example:\n"
+            f"  python -m verl.model_merger merge --backend fsdp --local_dir {local_dir} --target_dir {merged_target}\n"
+            "Or set auto_merge_verl_fsdp: true in config."
+        )
+
+    return _merge_verl_fsdp_checkpoint(checkpoint_path, str(merged_target))
 
 
 def resolve_checkpoint_path(cfg: EvalConfig, cli_checkpoint_path: str | None, cli_step: int | None) -> str:
@@ -258,17 +423,27 @@ def resolve_checkpoint_path(cfg: EvalConfig, cli_checkpoint_path: str | None, cl
             raise FileNotFoundError(f"CLI checkpoint path not found: {path}")
         return str(path)
     if cli_step is not None:
-        path = Path(cfg.weight_root) / f"checkpoint-{cli_step}"
-        if not path.is_dir():
-            raise FileNotFoundError(f"Checkpoint for step {cli_step} not found: {path}")
-        return str(path.resolve())
+        ckpt_path = Path(cfg.weight_root) / f"checkpoint-{cli_step}"
+        gspo_path = Path(cfg.weight_root) / f"global_step_{cli_step}"
+        if ckpt_path.is_dir():
+            return str(ckpt_path.resolve())
+        if gspo_path.is_dir():
+            return str(gspo_path.resolve())
+        raise FileNotFoundError(
+            f"Checkpoint/global_step for step {cli_step} not found: {ckpt_path} or {gspo_path}"
+        )
     if cfg.checkpoint_path:
         return cfg.checkpoint_path
     if cfg.checkpoint_step is not None:
-        path = Path(cfg.weight_root) / f"checkpoint-{cfg.checkpoint_step}"
-        if not path.is_dir():
-            raise FileNotFoundError(f"checkpoint_step not found: {path}")
-        return str(path.resolve())
+        ckpt_path = Path(cfg.weight_root) / f"checkpoint-{cfg.checkpoint_step}"
+        gspo_path = Path(cfg.weight_root) / f"global_step_{cfg.checkpoint_step}"
+        if ckpt_path.is_dir():
+            return str(ckpt_path.resolve())
+        if gspo_path.is_dir():
+            return str(gspo_path.resolve())
+        raise FileNotFoundError(
+            f"checkpoint_step not found: {ckpt_path} or {gspo_path}"
+        )
     if cfg.checkpoint_name:
         path = Path(cfg.weight_root) / cfg.checkpoint_name
         if not path.is_dir():
@@ -348,14 +523,15 @@ def load_model_and_tokenizer(pretrained_weight_path: str, checkpoint_path: str, 
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     apply_transformers_compat_shims()
-    tokenizer_source = checkpoint_path
+    model_dir = _resolve_model_dir(checkpoint_path)
+    tokenizer_source = model_dir
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=True)
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token = tokenizer.eos_token
 
     if full_or_lora == "full":
         model = AutoModel.from_pretrained(
-            str(Path(checkpoint_path).resolve()),
+            model_dir,
             trust_remote_code=True,
             attn_implementation="flash_attention_2",
             torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
@@ -368,7 +544,7 @@ def load_model_and_tokenizer(pretrained_weight_path: str, checkpoint_path: str, 
             attn_implementation="flash_attention_2",
             torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
         )
-        peft_model = PeftModel.from_pretrained(base_model, checkpoint_path)
+        peft_model = PeftModel.from_pretrained(base_model, model_dir)
         if hasattr(peft_model, "merge_and_unload"):
             model = peft_model.merge_and_unload()
         else:
@@ -620,8 +796,9 @@ def _run_multi_gpu(
     # device remapping where multiple workers land on physical GPU 0.
     merged_model_path: str | None = None
     if cfg.backend == "vllm":
+        model_dir = _resolve_model_dir(checkpoint_path)
         merged_model_path = merge_and_save_model(
-                cfg.pretrained_weight_path, checkpoint_path, cfg.merged_model_dir, cfg.full_or_lora
+                cfg.pretrained_weight_path, model_dir, cfg.merged_model_dir, cfg.full_or_lora
         )
         processes = []
         script_path = str(Path(__file__).resolve())
@@ -791,6 +968,7 @@ def main() -> None:
     validate_eval_config(cfg)
 
     checkpoint_path = resolve_checkpoint_path(cfg, args.checkpoint_path, args.checkpoint_step)
+    checkpoint_path = prepare_checkpoint_for_loading(cfg, checkpoint_path)
     selected_benchmarks = select_benchmarks(cfg, args.benchmarks)
 
     print(f"Backend: {cfg.backend}")
@@ -810,8 +988,9 @@ def main() -> None:
 
     elif cfg.backend == "vllm":
         # --- single-GPU vLLM path ---
+        model_dir = _resolve_model_dir(checkpoint_path)
         merged_model_path = merge_and_save_model(
-            cfg.pretrained_weight_path, checkpoint_path, cfg.merged_model_dir, cfg.full_or_lora
+            cfg.pretrained_weight_path, model_dir, cfg.merged_model_dir, cfg.full_or_lora
         )
         instruction = selected_benchmarks[0].instruction
         _setup_vllm_env(cfg, instruction, merged_model_path)

@@ -1,0 +1,56 @@
+pretrained_weight_path: ../DeepSeek-OCR-2/hf_cache/models--deepseek-ai--DeepSeek-OCR-2/snapshots/aaa02f3811945a91062062994c5c4a3f4c0af2b0
+weight_root: ./weight_gspo_rl_verl
+# GSPO RL exports full model states under global_step_*/actor/huggingface
+full_or_lora: full
+auto_merge_verl_fsdp: true
+verl_merged_dir: ./merged_verl_fsdp_eval
+
+# Choose one of:
+# 1) checkpoint_path (highest priority), e.g. ./weight_gspo_rl_verl/global_step_1999
+# 2) checkpoint_step, resolved to checkpoint-<step> OR global_step_<step>
+# 3) checkpoint_name, e.g. global_step_1999
+# 4) if all null, auto use latest checkpoint/global_step under weight_root
+checkpoint_path: null
+checkpoint_step: 1999
+checkpoint_name: null
+
+output_dir: ./gspo_evaluation_outputs
+image_size: 768
+base_size: 1024
+crop_mode: true
+num_workers: 16
+tanimoto: false
+
+# backend: transformers / vllm
+backend: vllm
+
+# --- vLLM options (only used when backend=vllm) ---
+vllm_code_dir: ../DeepSeek-OCR-2/DeepSeek-OCR2-master/DeepSeek-OCR2-vllm
+merged_model_dir: ./merged_gspo_eval_model
+vllm_gpu_memory_utilization: 0.8
+vllm_max_model_len: 8192
+vllm_tensor_parallel_size: 1
+
+# --- Multi-GPU data parallel ---
+num_gpus: 2
+gpu_ids: [0, 1]
+
+# null means run all enabled benchmarks
+selected_benchmarks: null
+
+benchmarks:
+  - name: acs
+    val_csv: ./benchmark/real/acs.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+    enabled: true
+
+  - name: UOB
+    val_csv: ./benchmark/real/UOB.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+    enabled: true
