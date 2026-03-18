@@ -84,10 +84,13 @@ Download the following benchmarks and unzip them into the folder **benchmark**.
 
 ### Run Evaluation
 
+Please use **chemseek-ocr** for evaluation! Don't use **chemseek-ocr-verl**
+
 Check **evaluation.py** and **evaluation_config.yaml**.
 
 ```bash
 python evaluation.py --config evaluation_config.yaml
+python evaluation_gspo.py --config evaluation_gspo_config.yaml
 ```
 
 ## Progressive SFT

@@ -288,6 +288,48 @@ def resolve_gspo_checkpoint_path(
     return latest
 
 
+def _patch_automap_for_verl_merger(hf_config_dir: Path) -> dict | None:
+    """Temporarily fix auto_map so verl model_merger recognises the class.
+
+    verl's ``get_transformers_auto_model_class`` only handles
+    AutoModelForCausalLM / AutoModelForTokenClassification /
+    AutoModelForVision2Seq.  DeepSeek-OCR2 registers under ``AutoModel``,
+    which causes ``NotImplementedError``.
+
+    We rewrite ``"AutoModel"`` -> ``"AutoModelForCausalLM"`` in
+    ``config.json`` before merging and return the original auto_map so
+    the caller can restore it afterwards if needed.
+    """
+    config_json = hf_config_dir / "config.json"
+    if not config_json.is_file():
+        return None
+    with open(config_json, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    auto_map = cfg.get("auto_map")
+    if not isinstance(auto_map, dict):
+        return None
+    if "AutoModel" in auto_map and "AutoModelForCausalLM" not in auto_map:
+        original_auto_map = dict(auto_map)
+        auto_map["AutoModelForCausalLM"] = auto_map.pop("AutoModel")
+        cfg["auto_map"] = auto_map
+        with open(config_json, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        print(f"  [patch] Rewrote auto_map AutoModel -> AutoModelForCausalLM in {config_json}")
+        return original_auto_map
+    return None
+
+
+def _restore_automap(hf_config_dir: Path, original_auto_map: dict) -> None:
+    config_json = hf_config_dir / "config.json"
+    if not config_json.is_file():
+        return
+    with open(config_json, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    cfg["auto_map"] = original_auto_map
+    with open(config_json, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+
 def merge_gspo_fsdp_checkpoint(
     checkpoint_path: str,
     merged_model_dir: str,
@@ -313,6 +355,9 @@ def merge_gspo_fsdp_checkpoint(
     target_dir.mkdir(parents=True, exist_ok=True)
     print(f"Merging FSDP shards from {actor_dir} -> {target_dir}")
 
+    hf_config_dir = actor_dir / "huggingface"
+    original_auto_map = _patch_automap_for_verl_merger(hf_config_dir)
+
     cmd = [
         sys.executable, "-m", "verl.model_merger", "merge",
         "--backend", merge_backend,
@@ -321,7 +366,12 @@ def merge_gspo_fsdp_checkpoint(
         "--target_dir", str(target_dir),
     ]
     print(f"  cmd: {' '.join(cmd)}")
-    ret = subprocess.run(cmd, check=False)
+    try:
+        ret = subprocess.run(cmd, check=False)
+    finally:
+        if original_auto_map is not None:
+            _restore_automap(hf_config_dir, original_auto_map)
+
     if ret.returncode != 0:
         raise RuntimeError(
             f"verl.model_merger failed (exit={ret.returncode}). "
