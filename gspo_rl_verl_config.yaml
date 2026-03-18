@@ -57,9 +57,9 @@ data:
 # ---------------------------------------------------------------------------
 # Runtime control kept outside hydra_cli_overrides
 # ---------------------------------------------------------------------------
-output_dir: ./weight_gspo_rl_verl
+output_dir: ./weight_gspo_rl_verl_test3
 allow_tf32: true
-gpu_ids: "0,1,2,3,4,5,6,7,8,9"
+gpu_ids: "2,3,4,5,6,7,8,9"
 # Optional. If unset, use <data.output_dir>/val.parquet when present, else train.parquet.
 val_parquet: null
 # Freeze settings are consumed by external_lib patch logic.
@@ -84,19 +84,20 @@ hydra_cli_overrides:
   "actor_rollout_ref.model.use_fused_kernels": false
 
   "actor_rollout_ref.actor.optim.lr": 1.0e-5
-  "actor_rollout_ref.actor.optim.weight_decay": 0.1
-  "actor_rollout_ref.actor.optim.clip_grad": 1.0
+  "actor_rollout_ref.actor.optim.weight_decay": 0.01
+  "actor_rollout_ref.actor.optim.clip_grad": 0.5
+  "actor_rollout_ref.actor.optim.lr_warmup_steps_ratio": 0.05
   "actor_rollout_ref.actor.policy_loss.loss_mode": gspo
   "actor_rollout_ref.actor.loss_agg_mode": seq-mean-token-mean
-  "actor_rollout_ref.actor.clip_ratio_low": 3.0e-4
-  "actor_rollout_ref.actor.clip_ratio_high": 4.0e-4
-  "actor_rollout_ref.actor.clip_ratio_c": 10.0
+  "actor_rollout_ref.actor.clip_ratio_low": 0.1
+  "actor_rollout_ref.actor.clip_ratio_high": 0.28
+  "actor_rollout_ref.actor.clip_ratio_c": 3.0
   "actor_rollout_ref.actor.use_kl_loss": false
   "actor_rollout_ref.actor.kl_loss_coef": 0.0
   "actor_rollout_ref.actor.use_dynamic_bsz": true
   "actor_rollout_ref.actor.ppo_mini_batch_size": 8
   "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu": 4
-  "actor_rollout_ref.actor.ppo_max_token_len_per_gpu": 6144
+  "actor_rollout_ref.actor.ppo_max_token_len_per_gpu": 5120
   "actor_rollout_ref.actor.entropy_coeff": 0
   "actor_rollout_ref.actor.ppo_epochs": 1
   "actor_rollout_ref.actor.freeze_vision_tower": true
@@ -110,10 +111,10 @@ hydra_cli_overrides:
 
   "actor_rollout_ref.rollout.name": vllm
   "actor_rollout_ref.rollout.tensor_model_parallel_size": 2
-  "actor_rollout_ref.rollout.max_model_len": 4096
-  "actor_rollout_ref.rollout.gpu_memory_utilization": 0.6
-  "actor_rollout_ref.rollout.n": 5
-  "actor_rollout_ref.rollout.temperature": 0.1
+  "actor_rollout_ref.rollout.max_model_len": 3072
+  "actor_rollout_ref.rollout.gpu_memory_utilization": 0.4
+  "actor_rollout_ref.rollout.n": 8
+  "actor_rollout_ref.rollout.temperature": 0.3
   "actor_rollout_ref.rollout.top_p": 0.95
   "actor_rollout_ref.rollout.val_kwargs.temperature": 0.0
   "actor_rollout_ref.rollout.val_kwargs.top_p": 1.0
@@ -131,7 +132,7 @@ hydra_cli_overrides:
   "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu": 4
 
   "data.train_batch_size": 16
-  "data.max_prompt_length": 4096
+  "data.max_prompt_length": 3072
   "data.max_response_length": 128
   "data.return_raw_chat": true
   "data.filter_overlong_prompts": true
@@ -150,7 +151,7 @@ hydra_cli_overrides:
   "+custom_reward_function.reward_kwargs.reward_weights.chiral": 1.0
   "+custom_reward_function.reward_kwargs.chiral_no_annotation_reward": 0.0
   "trainer.critic_warmup": 0
-  "trainer.n_gpus_per_node": 10
+  "trainer.n_gpus_per_node": 8
   "trainer.nnodes": 1
   "trainer.save_freq": 200
   "trainer.test_freq": -1
@@ -162,5 +163,5 @@ hydra_cli_overrides:
 wandb:
   enabled: true
   project: ChemSeek-OCR
-  run_name: gspo-verl-10gpu
+  run_name: gspo-verl-10gpu-test3
   api_key: null

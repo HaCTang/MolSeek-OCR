@@ -1,3 +1,16 @@
+"""Evaluate GSPO RL checkpoints (verl FSDP format) on configured benchmarks.
+
+GSPO checkpoints produced by verl use FSDP-sharded weights stored under
+``<weight_root>/global_step_<N>/actor/``.  Before inference, the shards
+are merged into a standard HuggingFace model directory using
+``verl.model_merger``.
+
+Usage:
+  python evaluation_gspo.py --config evaluation_gspo_config.yaml
+  python evaluation_gspo.py --config evaluation_gspo_config.yaml --checkpoint_step 400
+  python evaluation_gspo.py --config evaluation_gspo_config.yaml --checkpoint_path /path/to/global_step_400
+"""
+
 import argparse
 import json
 import math
@@ -6,18 +19,16 @@ import os
 import subprocess
 import sys
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import torch
-from peft import PeftModel
 from transformers import AutoModel, AutoTokenizer
 
 from DeepSeek_OCR_2 import apply_transformers_compat_shims, resolve_local_model_path
 from calc_accuracy import SmilesEvaluator
-from merge_lora_weight import merge_and_save_model
 
 SMILES_CANDIDATE_COLUMNS = ("SMILES", "smiles", "canonical_smiles")
 
@@ -39,14 +50,13 @@ class BenchmarkConfig:
 
 
 @dataclass
-class EvalConfig:
-    pretrained_weight_path: str
+class GspoEvalConfig:
     weight_root: str
-    full_or_lora: str
     checkpoint_step: int | None
     checkpoint_name: str | None
     checkpoint_path: str | None
     output_dir: str
+    merged_gspo_model_dir: str
     image_size: int
     base_size: int
     crop_mode: bool
@@ -54,18 +64,17 @@ class EvalConfig:
     tanimoto: bool
     selected_benchmarks: list[str] | None
     benchmarks: list[BenchmarkConfig]
-    # backend selection
     backend: str = "transformers"
     # vLLM-specific options
     vllm_code_dir: str | None = None
     vllm_gpu_memory_utilization: float = 0.85
     vllm_max_model_len: int = 8192
     vllm_tensor_parallel_size: int = 1
-    merged_model_dir: str | None = None
-    # Multi-GPU data parallelism (each GPU runs an independent model instance)
+    # Multi-GPU data parallelism
     num_gpus: int = 1
-    # Explicit physical GPU ids, e.g. [1, 3]. If set, overrides num_gpus.
     gpu_ids: list[int] | None = None
+    # verl FSDP merge backend (fsdp or megatron)
+    merge_backend: str = "fsdp"
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +95,9 @@ def _find_smiles_column(df: pd.DataFrame) -> str:
     raise ValueError(f"No SMILES column found. Tried {SMILES_CANDIDATE_COLUMNS}, got {list(df.columns)}")
 
 
-def load_eval_config(config_path: str) -> EvalConfig:
+def load_eval_config(config_path: str) -> GspoEvalConfig:
     try:
-        import yaml  # type: ignore[import-not-found]
+        import yaml
     except ImportError as exc:
         raise ImportError("PyYAML is required. Install with: pip install pyyaml") from exc
 
@@ -101,14 +110,15 @@ def load_eval_config(config_path: str) -> EvalConfig:
     if not isinstance(raw, dict):
         raise ValueError("YAML config root must be a mapping/object.")
 
-    raw["pretrained_weight_path"] = _resolve_path(raw["pretrained_weight_path"], config_file.parent)
-    raw["weight_root"] = _resolve_path(raw.get("weight_root", "./weight"), config_file.parent)
-    raw["full_or_lora"] = str(raw.get("full_or_lora", "lora")).strip().lower()
+    raw["weight_root"] = _resolve_path(raw.get("weight_root", "./weight_gspo_rl_verl"), config_file.parent)
     raw["output_dir"] = _resolve_path(
-        raw.get("output_dir", raw.get("output_dir_path", "./evaluation_outputs")),
+        raw.get("output_dir", "./gspo_evaluation_outputs"),
         config_file.parent,
     )
-    raw.pop("output_dir_path", None)
+    raw["merged_gspo_model_dir"] = _resolve_path(
+        raw.get("merged_gspo_model_dir", "./merged_gspo_models"),
+        config_file.parent,
+    )
     raw["checkpoint_path"] = raw.get("checkpoint_path", None)
     if raw["checkpoint_path"] not in (None, ""):
         raw["checkpoint_path"] = _resolve_path(raw["checkpoint_path"], config_file.parent)
@@ -122,10 +132,9 @@ def load_eval_config(config_path: str) -> EvalConfig:
     raw["num_workers"] = int(raw.get("num_workers", 16))
     raw["tanimoto"] = bool(raw.get("tanimoto", False))
 
-    # backend
     raw["backend"] = raw.get("backend", "transformers")
+    raw["merge_backend"] = raw.get("merge_backend", "fsdp")
 
-    # vLLM options
     vllm_code_dir = raw.get("vllm_code_dir", None)
     if vllm_code_dir not in (None, ""):
         raw["vllm_code_dir"] = _resolve_path(vllm_code_dir, config_file.parent)
@@ -140,11 +149,6 @@ def load_eval_config(config_path: str) -> EvalConfig:
         raw["gpu_ids"] = None
     else:
         raw["gpu_ids"] = [int(x) for x in gpu_ids_raw]
-    merged_model_dir = raw.get("merged_model_dir", None)
-    if merged_model_dir not in (None, ""):
-        raw["merged_model_dir"] = _resolve_path(merged_model_dir, config_file.parent)
-    else:
-        raw["merged_model_dir"] = None
 
     selected = raw.get("selected_benchmarks", None)
     if selected in (None, []):
@@ -174,14 +178,12 @@ def load_eval_config(config_path: str) -> EvalConfig:
         parsed_benchmarks.append(BenchmarkConfig(**item))
     raw["benchmarks"] = parsed_benchmarks
 
-    cfg = EvalConfig(**raw)
+    cfg = GspoEvalConfig(**raw)
     validate_eval_config(cfg)
     return cfg
 
 
-def validate_eval_config(cfg: EvalConfig) -> None:
-    if not os.path.isdir(cfg.pretrained_weight_path):
-        raise ValueError(f"pretrained_weight_path not found: {cfg.pretrained_weight_path}")
+def validate_eval_config(cfg: GspoEvalConfig) -> None:
     if not os.path.isdir(cfg.weight_root):
         raise ValueError(f"weight_root not found: {cfg.weight_root}")
     if cfg.num_workers <= 0:
@@ -199,13 +201,11 @@ def validate_eval_config(cfg: EvalConfig) -> None:
             raise ValueError(f"gpu_ids contains duplicates: {cfg.gpu_ids}")
     if cfg.backend not in ("transformers", "vllm"):
         raise ValueError(f"backend must be 'transformers' or 'vllm', got '{cfg.backend}'")
-    if cfg.full_or_lora not in ("full", "lora"):
-        raise ValueError(f"full_or_lora must be 'full' or 'lora', got '{cfg.full_or_lora}'")
+    if cfg.merge_backend not in ("fsdp", "megatron"):
+        raise ValueError(f"merge_backend must be 'fsdp' or 'megatron', got '{cfg.merge_backend}'")
     if cfg.backend == "vllm":
         if not cfg.vllm_code_dir or not os.path.isdir(cfg.vllm_code_dir):
             raise ValueError(f"vllm_code_dir is required and must exist for vllm backend: {cfg.vllm_code_dir}")
-        if not cfg.merged_model_dir:
-            raise ValueError("merged_model_dir is required for vllm backend")
 
     for i, bench in enumerate(cfg.benchmarks):
         if bench.data_mode not in ("realistic", "pre_rendered"):
@@ -229,43 +229,51 @@ def validate_eval_config(cfg: EvalConfig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Shared helpers
+# GSPO FSDP checkpoint helpers
 # ---------------------------------------------------------------------------
 
-def _find_latest_checkpoint(weight_root: str) -> str | None:
+def _find_latest_gspo_checkpoint(weight_root: str) -> str | None:
+    """Find the latest global_step_<N> checkpoint under weight_root."""
     path = Path(weight_root)
     if not path.is_dir():
         return None
     checkpoints = []
-    for ckpt in path.glob("checkpoint-*"):
+    for ckpt in path.glob("global_step_*"):
         if not ckpt.is_dir():
             continue
         try:
-            step = int(ckpt.name.split("-", 1)[1])
+            step = int(ckpt.name.split("_")[-1])
         except (IndexError, ValueError):
             continue
-        checkpoints.append((step, ckpt))
+        actor_dir = ckpt / "actor"
+        if actor_dir.is_dir():
+            checkpoints.append((step, ckpt))
     if not checkpoints:
         return None
     checkpoints.sort(key=lambda x: x[0])
     return str(checkpoints[-1][1])
 
 
-def resolve_checkpoint_path(cfg: EvalConfig, cli_checkpoint_path: str | None, cli_step: int | None) -> str:
+def resolve_gspo_checkpoint_path(
+    cfg: GspoEvalConfig,
+    cli_checkpoint_path: str | None,
+    cli_step: int | None,
+) -> str:
+    """Resolve the GSPO checkpoint directory (global_step_<N>)."""
     if cli_checkpoint_path:
         path = Path(cli_checkpoint_path).resolve()
         if not path.is_dir():
             raise FileNotFoundError(f"CLI checkpoint path not found: {path}")
         return str(path)
     if cli_step is not None:
-        path = Path(cfg.weight_root) / f"checkpoint-{cli_step}"
+        path = Path(cfg.weight_root) / f"global_step_{cli_step}"
         if not path.is_dir():
             raise FileNotFoundError(f"Checkpoint for step {cli_step} not found: {path}")
         return str(path.resolve())
     if cfg.checkpoint_path:
         return cfg.checkpoint_path
     if cfg.checkpoint_step is not None:
-        path = Path(cfg.weight_root) / f"checkpoint-{cfg.checkpoint_step}"
+        path = Path(cfg.weight_root) / f"global_step_{cfg.checkpoint_step}"
         if not path.is_dir():
             raise FileNotFoundError(f"checkpoint_step not found: {path}")
         return str(path.resolve())
@@ -274,11 +282,78 @@ def resolve_checkpoint_path(cfg: EvalConfig, cli_checkpoint_path: str | None, cl
         if not path.is_dir():
             raise FileNotFoundError(f"checkpoint_name not found: {path}")
         return str(path.resolve())
-    latest = _find_latest_checkpoint(cfg.weight_root)
+    latest = _find_latest_gspo_checkpoint(cfg.weight_root)
     if latest is None:
-        raise FileNotFoundError(f"No checkpoint-* found under {cfg.weight_root}")
+        raise FileNotFoundError(f"No global_step_* found under {cfg.weight_root}")
     return latest
 
+
+def merge_gspo_fsdp_checkpoint(
+    checkpoint_path: str,
+    merged_model_dir: str,
+    merge_backend: str = "fsdp",
+) -> str:
+    """Merge verl FSDP-sharded actor weights into a HuggingFace model dir.
+
+    Uses ``python -m verl.model_merger merge`` under the hood.
+    Returns the path to the merged HF model directory.
+    """
+    ckpt_name = Path(checkpoint_path).name
+    actor_dir = Path(checkpoint_path) / "actor"
+    if not actor_dir.is_dir():
+        raise FileNotFoundError(f"actor/ subdirectory not found in {checkpoint_path}")
+
+    target_dir = Path(merged_model_dir) / ckpt_name
+    marker_file = target_dir / ".merge_complete"
+
+    if marker_file.is_file():
+        print(f"Using cached merged GSPO model: {target_dir}")
+        return str(target_dir)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Merging FSDP shards from {actor_dir} -> {target_dir}")
+
+    cmd = [
+        sys.executable, "-m", "verl.model_merger", "merge",
+        "--backend", merge_backend,
+        "--trust-remote-code",
+        "--local_dir", str(actor_dir),
+        "--target_dir", str(target_dir),
+    ]
+    print(f"  cmd: {' '.join(cmd)}")
+    ret = subprocess.run(cmd, check=False)
+    if ret.returncode != 0:
+        raise RuntimeError(
+            f"verl.model_merger failed (exit={ret.returncode}). "
+            f"Make sure verl is installed in the current environment."
+        )
+
+    _patch_merged_config_for_vllm(target_dir)
+
+    marker_file.touch()
+    print(f"Merged GSPO model saved to: {target_dir}")
+    return str(target_dir)
+
+
+def _patch_merged_config_for_vllm(target_dir: Path) -> None:
+    """Adjust config.json so vLLM can load DeepSeek-OCR2 correctly."""
+    config_json_path = target_dir / "config.json"
+    if not config_json_path.is_file():
+        return
+    with open(config_json_path, "r", encoding="utf-8") as f:
+        cfg_data = json.load(f)
+    cfg_data["model_type"] = "deepseek_vl_v2"
+    cfg_data.pop("auto_map", None)
+    with open(config_json_path, "w", encoding="utf-8") as f:
+        json.dump(cfg_data, f, indent=2, ensure_ascii=False)
+
+    for py_file in target_dir.glob("*.py"):
+        py_file.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 def _resolve_image_path(row: pd.Series, bench: BenchmarkConfig) -> str:
     if bench.data_mode == "realistic":
@@ -314,7 +389,7 @@ def _apply_sample_num(df: pd.DataFrame, sample_num: int | None) -> pd.DataFrame:
 
 
 def _save_benchmark_results(
-    cfg: EvalConfig,
+    cfg: GspoEvalConfig,
     checkpoint_path: str,
     bench: BenchmarkConfig,
     image_ids: list,
@@ -342,37 +417,22 @@ def _save_benchmark_results(
 # Transformers backend
 # ---------------------------------------------------------------------------
 
-def load_model_and_tokenizer(pretrained_weight_path: str, checkpoint_path: str, full_or_lora: str):
+def load_model_and_tokenizer(merged_model_path: str):
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for DeepSeek-OCR2 evaluation.")
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     apply_transformers_compat_shims()
-    tokenizer_source = checkpoint_path
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(merged_model_path, trust_remote_code=True)
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if full_or_lora == "full":
-        model = AutoModel.from_pretrained(
-            str(Path(checkpoint_path).resolve()),
-            trust_remote_code=True,
-            attn_implementation="flash_attention_2",
-            torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
-        )
-    else:
-        model_path = resolve_local_model_path(Path(pretrained_weight_path).resolve())
-        base_model = AutoModel.from_pretrained(
-            str(model_path),
-            trust_remote_code=True,
-            attn_implementation="flash_attention_2",
-            torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
-        )
-        peft_model = PeftModel.from_pretrained(base_model, checkpoint_path)
-        if hasattr(peft_model, "merge_and_unload"):
-            model = peft_model.merge_and_unload()
-        else:
-            model = peft_model
+    model = AutoModel.from_pretrained(
+        merged_model_path,
+        trust_remote_code=True,
+        attn_implementation="flash_attention_2",
+        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+    )
     model = model.eval().cuda()
     return model, tokenizer
 
@@ -380,7 +440,7 @@ def load_model_and_tokenizer(pretrained_weight_path: str, checkpoint_path: str, 
 def run_benchmark_transformers(
     model,
     tokenizer,
-    cfg: EvalConfig,
+    cfg: GspoEvalConfig,
     checkpoint_path: str,
     bench: BenchmarkConfig,
 ) -> dict[str, Any]:
@@ -424,7 +484,7 @@ def run_benchmark_transformers(
 # vLLM backend
 # ---------------------------------------------------------------------------
 
-def _setup_vllm_env(cfg: EvalConfig, instruction: str, merged_model_path: str) -> None:
+def _setup_vllm_env(cfg: GspoEvalConfig, instruction: str, merged_model_path: str) -> None:
     os.environ["VLLM_USE_V1"] = "0"
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -450,7 +510,7 @@ def _setup_vllm_env(cfg: EvalConfig, instruction: str, merged_model_path: str) -
         sys.path.insert(0, vllm_dir)
 
 
-def load_vllm_model(merged_model_path: str, cfg: EvalConfig):
+def load_vllm_model(merged_model_path: str, cfg: GspoEvalConfig):
     from vllm import LLM
     from vllm.model_executor.models.registry import ModelRegistry
     from deepseek_ocr2 import DeepseekOCR2ForCausalLM as VLLMDeepseekOCR2
@@ -473,7 +533,7 @@ def load_vllm_model(merged_model_path: str, cfg: EvalConfig):
 
 def run_benchmark_vllm(
     llm,
-    cfg: EvalConfig,
+    cfg: GspoEvalConfig,
     checkpoint_path: str,
     bench: BenchmarkConfig,
 ) -> dict[str, Any]:
@@ -540,16 +600,14 @@ def run_benchmark_vllm(
 def _vllm_gpu_worker(
     physical_gpu_id: int,
     merged_model_path: str,
-    cfg: EvalConfig,
+    cfg: GspoEvalConfig,
     checkpoint_path: str,
     benchmarks: list[BenchmarkConfig],
     result_queue,
 ) -> None:
-    """Run assigned benchmarks on a single GPU with vLLM (spawned process)."""
     os.environ["CUDA_VISIBLE_DEVICES"] = str(physical_gpu_id)
     os.environ["VLLM_USE_V1"] = "0"
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    # With CUDA_VISIBLE_DEVICES set to one GPU, local device index is always 0.
     torch.cuda.set_device(0)
 
     cfg.vllm_tensor_parallel_size = 1
@@ -570,21 +628,17 @@ def _vllm_gpu_worker(
 
 def _transformers_gpu_worker(
     physical_gpu_id: int,
-    cfg: EvalConfig,
+    merged_model_path: str,
+    cfg: GspoEvalConfig,
     checkpoint_path: str,
     benchmarks: list[BenchmarkConfig],
     result_queue,
 ) -> None:
-    """Run assigned benchmarks on a single GPU with transformers (spawned process)."""
     os.environ["CUDA_VISIBLE_DEVICES"] = str(physical_gpu_id)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     torch.cuda.set_device(0)
 
-    model, tokenizer = load_model_and_tokenizer(
-        cfg.pretrained_weight_path,
-        checkpoint_path,
-        cfg.full_or_lora,
-    )
+    model, tokenizer = load_model_and_tokenizer(merged_model_path)
 
     gpu_scores: dict[str, Any] = {}
     for bench in benchmarks:
@@ -597,12 +651,12 @@ def _transformers_gpu_worker(
 
 
 def _run_multi_gpu(
-    cfg: EvalConfig,
+    cfg: GspoEvalConfig,
     checkpoint_path: str,
+    merged_model_path: str,
     selected_benchmarks: list[BenchmarkConfig],
     config_path: str,
 ) -> dict[str, Any]:
-    """Distribute benchmarks across GPUs and run in parallel."""
     if cfg.gpu_ids:
         selected_gpu_ids = cfg.gpu_ids[: len(selected_benchmarks)]
     else:
@@ -610,19 +664,11 @@ def _run_multi_gpu(
         selected_gpu_ids = list(range(num_gpus))
     num_slots = len(selected_gpu_ids)
 
-    # Round-robin distribute benchmarks across GPUs
     gpu_groups: list[list[BenchmarkConfig]] = [[] for _ in range(num_slots)]
     for i, bench in enumerate(selected_benchmarks):
         gpu_groups[i % num_slots].append(bench)
 
-    # For vLLM, use subprocess-per-GPU to guarantee CUDA_VISIBLE_DEVICES is
-    # applied before Python imports torch/vllm. This avoids accidental
-    # device remapping where multiple workers land on physical GPU 0.
-    merged_model_path: str | None = None
     if cfg.backend == "vllm":
-        merged_model_path = merge_and_save_model(
-                cfg.pretrained_weight_path, checkpoint_path, cfg.merged_model_dir, cfg.full_or_lora
-        )
         processes = []
         script_path = str(Path(__file__).resolve())
         work_dir = str(Path(__file__).resolve().parent)
@@ -677,7 +723,7 @@ def _run_multi_gpu(
 
     ctx = multiprocessing.get_context("spawn")
     result_queue = ctx.Queue()
-    processes = []
+    processes_mp = []
 
     for slot_idx, physical_gpu_id in enumerate(selected_gpu_ids):
         if not gpu_groups[slot_idx]:
@@ -688,21 +734,21 @@ def _run_multi_gpu(
                     gpu_groups[slot_idx], result_queue)
         else:
             target = _transformers_gpu_worker
-            args = (physical_gpu_id, cfg, checkpoint_path,
+            args = (physical_gpu_id, merged_model_path, cfg, checkpoint_path,
                     gpu_groups[slot_idx], result_queue)
 
         p = ctx.Process(target=target, args=args)
         p.start()
-        processes.append(p)
+        processes_mp.append(p)
         print(f"[GPU {physical_gpu_id}] started with benchmarks: "
               f"{[b.name for b in gpu_groups[slot_idx]]}")
 
     all_scores: dict[str, Any] = {}
-    for _ in processes:
+    for _ in processes_mp:
         gpu_scores = result_queue.get(timeout=7200)
         all_scores.update(gpu_scores)
 
-    for p in processes:
+    for p in processes_mp:
         p.join()
 
     return all_scores
@@ -715,20 +761,20 @@ def _run_multi_gpu(
 def parse_args() -> argparse.Namespace:
     workspace = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(
-        description="Evaluate fine-tuned DeepSeek-OCR2 checkpoints on configured benchmarks."
+        description="Evaluate GSPO RL checkpoints (verl FSDP format) on configured benchmarks."
     )
     parser.add_argument(
         "--config", type=str,
-        default=str(workspace / "evaluation_config.yaml"),
-        help="Path to evaluation YAML config.",
+        default=str(workspace / "evaluation_gspo_config.yaml"),
+        help="Path to GSPO evaluation YAML config.",
     )
     parser.add_argument(
         "--checkpoint_path", type=str, default=None,
-        help="Optional explicit checkpoint directory path (highest priority).",
+        help="Optional explicit checkpoint directory path (e.g. /path/to/global_step_400).",
     )
     parser.add_argument(
         "--checkpoint_step", type=int, default=None,
-        help="Optional checkpoint step, resolved as <weight_root>/checkpoint-<step>.",
+        help="Optional checkpoint step, resolved as <weight_root>/global_step_<step>.",
     )
     parser.add_argument(
         "--benchmarks", type=str, default=None,
@@ -753,7 +799,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def select_benchmarks(cfg: EvalConfig, cli_benchmarks: str | None) -> list[BenchmarkConfig]:
+def select_benchmarks(cfg: GspoEvalConfig, cli_benchmarks: str | None) -> list[BenchmarkConfig]:
     if cli_benchmarks:
         selected = {x.strip() for x in cli_benchmarks.split(",") if x.strip()}
     elif cfg.selected_benchmarks:
@@ -790,12 +836,18 @@ def main() -> None:
         cfg.gpu_ids = [int(x.strip()) for x in args.gpu_ids.split(",") if x.strip()]
     validate_eval_config(cfg)
 
-    checkpoint_path = resolve_checkpoint_path(cfg, args.checkpoint_path, args.checkpoint_step)
+    checkpoint_path = resolve_gspo_checkpoint_path(cfg, args.checkpoint_path, args.checkpoint_step)
     selected_benchmarks = select_benchmarks(cfg, args.benchmarks)
 
     print(f"Backend: {cfg.backend}")
-    print(f"Mode: {cfg.full_or_lora}")
-    print(f"Using checkpoint: {checkpoint_path}")
+    print(f"GSPO checkpoint: {checkpoint_path}")
+
+    # Step 1: merge FSDP shards into HF model
+    merged_model_path = merge_gspo_fsdp_checkpoint(
+        checkpoint_path, cfg.merged_gspo_model_dir, cfg.merge_backend
+    )
+    print(f"Merged model path: {merged_model_path}")
+
     if cfg.gpu_ids:
         print(f"GPU ids: {cfg.gpu_ids}")
     else:
@@ -805,14 +857,9 @@ def main() -> None:
 
     use_multi_gpu = (len(cfg.gpu_ids) > 1) if cfg.gpu_ids else (cfg.num_gpus > 1)
     if use_multi_gpu:
-        # --- multi-GPU data-parallel path ---
-        all_scores = _run_multi_gpu(cfg, checkpoint_path, selected_benchmarks, args.config)
+        all_scores = _run_multi_gpu(cfg, checkpoint_path, merged_model_path, selected_benchmarks, args.config)
 
     elif cfg.backend == "vllm":
-        # --- single-GPU vLLM path ---
-        merged_model_path = merge_and_save_model(
-            cfg.pretrained_weight_path, checkpoint_path, cfg.merged_model_dir, cfg.full_or_lora
-        )
         instruction = selected_benchmarks[0].instruction
         _setup_vllm_env(cfg, instruction, merged_model_path)
         llm = load_vllm_model(merged_model_path, cfg)
@@ -824,8 +871,7 @@ def main() -> None:
             print(json.dumps({bench.name: scores}, indent=2))
 
     else:
-        # --- single-GPU transformers path ---
-        model, tokenizer = load_model_and_tokenizer(cfg.pretrained_weight_path, checkpoint_path, cfg.full_or_lora)
+        model, tokenizer = load_model_and_tokenizer(merged_model_path)
 
         for bench in selected_benchmarks:
             print(f"\n=== Running benchmark: {bench.name} ===")

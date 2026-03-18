@@ -41,7 +41,7 @@ vllm_tensor_parallel_size: 1
 num_gpus: 2
 # Optional explicit physical GPU ids. If set, overrides num_gpus.
 # Example: [1, 3]
-gpu_ids: [0, 1]
+gpu_ids: [8, 9]
 
 
 # null means run all enabled benchmarks.
@@ -104,13 +104,13 @@ benchmarks:
   #   sample_num: null
   #   enabled: true
 
-  - name: UOB
-    val_csv: ./benchmark/real/UOB.csv
-    data_mode: realistic
-    realistic_image_root: ./benchmark
-    instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: null
-    enabled: true
+  # - name: UOB
+  #   val_csv: ./benchmark/real/UOB.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
 
   # - name: USPTO
   #   val_csv: ./benchmark/real/USPTO.csv
