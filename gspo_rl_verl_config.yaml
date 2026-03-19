@@ -57,13 +57,13 @@ data:
 # ---------------------------------------------------------------------------
 # Runtime control kept outside hydra_cli_overrides
 # ---------------------------------------------------------------------------
-output_dir: ./weight_gspo_rl_verl_test3
+output_dir: ./weight_gspo_rl_verl_test4
 allow_tf32: true
 gpu_ids: "2,3,4,5,6,7,8,9"
 # Optional. If unset, use <data.output_dir>/val.parquet when present, else train.parquet.
 val_parquet: null
 # Freeze settings are consumed by external_lib patch logic.
-freeze_layers: []
+freeze_layers: [0, 1, 2, 3]
 freeze_modules:
   - model.sam_model
   - model.embed_tokens
@@ -83,7 +83,7 @@ hydra_cli_overrides:
   "++actor_rollout_ref.model.override_config.attn_implementation": flash_attention_2
   "actor_rollout_ref.model.use_fused_kernels": false
 
-  "actor_rollout_ref.actor.optim.lr": 1.0e-5
+  "actor_rollout_ref.actor.optim.lr": 1.0e-6
   "actor_rollout_ref.actor.optim.weight_decay": 0.01
   "actor_rollout_ref.actor.optim.clip_grad": 0.5
   "actor_rollout_ref.actor.optim.lr_warmup_steps_ratio": 0.05
@@ -98,7 +98,7 @@ hydra_cli_overrides:
   "actor_rollout_ref.actor.ppo_mini_batch_size": 8
   "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu": 4
   "actor_rollout_ref.actor.ppo_max_token_len_per_gpu": 5120
-  "actor_rollout_ref.actor.entropy_coeff": 0
+  "actor_rollout_ref.actor.entropy_coeff": 0.001
   "actor_rollout_ref.actor.ppo_epochs": 1
   "actor_rollout_ref.actor.freeze_vision_tower": true
   "actor_rollout_ref.actor.fsdp_config.param_offload": false
@@ -144,11 +144,12 @@ hydra_cli_overrides:
 
   "reward_model.reward_manager": naive
   "custom_reward_function.name": compute_score
-  "+custom_reward_function.reward_kwargs.reward_weights.validity": 1.0
+  "+custom_reward_function.reward_kwargs.reward_weights.validity": 0.0
   "+custom_reward_function.reward_kwargs.reward_weights.tanimoto": 3.0
-  "+custom_reward_function.reward_kwargs.reward_weights.canon_smiles": 0.0
+  "+custom_reward_function.reward_kwargs.reward_weights.canon_smiles": 1.0
   "+custom_reward_function.reward_kwargs.reward_weights.graph": 2.0
   "+custom_reward_function.reward_kwargs.reward_weights.chiral": 1.0
+  "+custom_reward_function.reward_kwargs.reward_weights.repetition_penalty": 2.0
   "+custom_reward_function.reward_kwargs.chiral_no_annotation_reward": 0.0
   "trainer.critic_warmup": 0
   "trainer.n_gpus_per_node": 8
@@ -163,5 +164,5 @@ hydra_cli_overrides:
 wandb:
   enabled: true
   project: ChemSeek-OCR
-  run_name: gspo-verl-10gpu-test3
+  run_name: gspo-verl-8gpu-test4
   api_key: null

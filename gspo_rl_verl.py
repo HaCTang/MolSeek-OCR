@@ -236,6 +236,49 @@ def _tanimoto_similarity(smi1: str, smi2: str) -> float:
         return 0.0
 
 
+def _repetition_penalty(smiles: str) -> float:
+    """Return a penalty in [0, 1] for degenerate repetitive SMILES.
+
+    0 = no penalty (clean), 1 = maximally repetitive.
+    Detects patterns like "CCCCCC...", "C.C.C.C...", "ClClCl..." etc.
+    """
+    if not smiles or len(smiles) < 20:
+        return 0.0
+    s = smiles
+    length = len(s)
+    max_run = 1
+    cur_run = 1
+    for i in range(1, length):
+        if s[i] == s[i - 1]:
+            cur_run += 1
+            max_run = max(max_run, cur_run)
+        else:
+            cur_run = 1
+    char_repeat_ratio = max_run / length
+
+    for pat_len in range(1, 5):
+        if length < pat_len * 12:
+            continue
+        pat = s[:pat_len]
+        repeats = 0
+        for i in range(0, length - pat_len + 1, pat_len):
+            if s[i:i + pat_len] == pat:
+                repeats += 1
+            else:
+                break
+        if repeats >= 12:
+            return min(1.0, repeats * pat_len / length)
+
+    if char_repeat_ratio > 0.3:
+        return min(1.0, char_repeat_ratio)
+
+    unique_chars = len(set(s))
+    if length > 30 and unique_chars <= 3:
+        return 0.5
+
+    return 0.0
+
+
 def _compute_reward_components(
     gold_smiles: str, pred_smiles: str, chiral_no_annotation_reward: float = 0.0
 ) -> Dict[str, float]:
@@ -255,17 +298,24 @@ def _compute_reward_components(
 
     has_chiral = "@" in (canon_gold or "")
     canon_match = float(valid_gold and valid_pred and (canon_gold == canon_pred))
-    graph_match = float(valid_graph_gold and valid_graph_pred and (graph_gold == graph_pred))
+    graph_sim = (
+        _tanimoto_similarity(graph_gold, graph_pred)
+        if (valid_graph_gold and valid_graph_pred)
+        else 0.0
+    )
     chiral_acc = (
         float(canon_match > 0.5) if has_chiral else chiral_no_annotation_reward
     )
+
+    rep_penalty = _repetition_penalty(pred_smiles)
 
     return {
         "validity": float(valid_pred),
         "tanimoto": _tanimoto_similarity(gold_smiles, pred_smiles),
         "canon_smiles": canon_match,
-        "graph": graph_match,
+        "graph": graph_sim,
         "chiral": chiral_acc,
+        "repetition_penalty": rep_penalty,
     }
 
 
@@ -295,11 +345,12 @@ def compute_score(
     pred_smiles = _extract_smiles_candidate(str(solution_str))
 
     w = kwargs.get("reward_weights", {})
-    w_validity = float(w.get("validity", 2.0))
-    w_tanimoto = float(w.get("tanimoto", 1.0))
-    w_canon = float(w.get("canon_smiles", 2.0))
-    w_graph = float(w.get("graph", 1.5))
-    w_chiral = float(w.get("chiral", 1.5))
+    w_validity = float(w.get("validity", 0.5))
+    w_tanimoto = float(w.get("tanimoto", 2.0))
+    w_canon = float(w.get("canon_smiles", 3.0))
+    w_graph = float(w.get("graph", 2.0))
+    w_chiral = float(w.get("chiral", 1.0))
+    w_rep_penalty = float(w.get("repetition_penalty", 2.0))
     chiral_no_ann = float(kwargs.get("chiral_no_annotation_reward", 0.0))
 
     components = _compute_reward_components(gold_smiles, pred_smiles, chiral_no_ann)
@@ -310,9 +361,11 @@ def compute_score(
         + w_canon * components["canon_smiles"]
         + w_graph * components["graph"]
         + w_chiral * components["chiral"]
+        - w_rep_penalty * components["repetition_penalty"]
     )
     w_total = w_validity + w_tanimoto + w_canon + w_graph + w_chiral
     score = float(weighted_sum / w_total) if w_total > 0 else 0.0
+    score = max(0.0, score)
 
     return score
 

@@ -8,7 +8,7 @@
 # ===========================================================================
 
 # Root directory containing global_step_* checkpoint directories
-weight_root: ./weight_gspo_rl_verl_test3
+weight_root: ./weight_gspo_rl_verl_test4
 
 # Choose one of:
 # 1) checkpoint_path (highest priority), e.g. ./weight_gspo_rl_verl_test3/global_step_400
@@ -16,7 +16,7 @@ weight_root: ./weight_gspo_rl_verl_test3
 # 3) checkpoint_name, e.g. global_step_400
 # 4) if all null, auto use latest global_step_* under weight_root
 checkpoint_path: null
-checkpoint_step: 400
+checkpoint_step: 200
 checkpoint_name: null
 
 # Output directory for evaluation artifacts/metrics
@@ -46,7 +46,7 @@ vllm_tensor_parallel_size: 1
 # --- Multi-GPU data parallelism ---
 num_gpus: 2
 # Optional explicit physical GPU ids. If set, overrides num_gpus.
-gpu_ids: [8, 9]
+gpu_ids: [0, 1]
 
 
 # null means run all enabled benchmarks.
