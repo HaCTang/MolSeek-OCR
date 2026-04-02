@@ -21,11 +21,10 @@ weight_router_rl/
 GSPO_verl_case/
 verl_data/
 outputs/
-test_img/
 merged_full_sft_800K_1EPOCH_model/
 gspo_evaluation_outputs/
 reft_sft_evaluation_outputs/
-_chemseek_gspo_freeze.py
+gspo/_chemseek_gspo_freeze.py
 github.txt
 *.zip
 *.pt

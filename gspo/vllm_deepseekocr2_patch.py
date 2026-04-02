@@ -19,10 +19,10 @@ def _resolve_vllm_code_dir() -> str | None:
             return str(p)
 
     # Fallback for current project layout:
-    #   ChemLLM/ChemSeek-OCR  (this file)
+    #   ChemLLM/ChemSeek-OCR/gspo  (this file)
     #   ChemLLM/DeepSeek-OCR-2/DeepSeek-OCR2-master/DeepSeek-OCR2-vllm
     candidate = (
-        Path(__file__).resolve().parent.parent
+        Path(__file__).resolve().parent.parent.parent
         / "DeepSeek-OCR-2"
         / "DeepSeek-OCR2-master"
         / "DeepSeek-OCR2-vllm"

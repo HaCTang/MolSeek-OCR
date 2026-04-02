@@ -3,15 +3,15 @@
 # Evaluate verl FSDP checkpoints (global_step_*) on configured benchmarks.
 #
 # Usage:
-#   python evaluation_gspo.py --config evaluation_gspo_config.yaml
-#   python evaluation_gspo.py --config evaluation_gspo_config.yaml --checkpoint_step 400
+#   python gspo/evaluation_gspo.py --config gspo/evaluation_gspo_config.yaml
+#   python gspo/evaluation_gspo.py --config gspo/evaluation_gspo_config.yaml --checkpoint_step 400
 # ===========================================================================
 
 # Root directory containing global_step_* checkpoint directories
-weight_root: ./weight_gspo_rl_verl_test4
+weight_root: ../weight_gspo_rl_verl_test4
 
 # Choose one of:
-# 1) checkpoint_path (highest priority), e.g. ./weight_gspo_rl_verl_test3/global_step_400
+# 1) checkpoint_path (highest priority), e.g. ../weight_gspo_rl_verl_test3/global_step_400
 # 2) checkpoint_step, resolved to <weight_root>/global_step_<step>
 # 3) checkpoint_name, e.g. global_step_400
 # 4) if all null, auto use latest global_step_* under weight_root
@@ -20,10 +20,10 @@ checkpoint_step: 200
 checkpoint_name: null
 
 # Output directory for evaluation artifacts/metrics
-output_dir: ./gspo_evaluation_outputs
+output_dir: ../gspo_evaluation_outputs
 
 # Directory to cache merged FSDP -> HF models (one subdirectory per checkpoint)
-merged_gspo_model_dir: ./merged_gspo_models
+merged_gspo_model_dir: ../merged_gspo_models
 
 # verl FSDP merge backend: "fsdp" or "megatron"
 merge_backend: fsdp
@@ -38,7 +38,7 @@ tanimoto: false
 backend: vllm
 
 # --- vLLM-specific options (only used when backend=vllm) ---
-vllm_code_dir: ../DeepSeek-OCR-2/DeepSeek-OCR2-master/DeepSeek-OCR2-vllm
+vllm_code_dir: ../../DeepSeek-OCR-2/DeepSeek-OCR2-master/DeepSeek-OCR2-vllm
 vllm_gpu_memory_utilization: 0.8
 vllm_max_model_len: 8192
 vllm_tensor_parallel_size: 1
@@ -54,89 +54,89 @@ selected_benchmarks: null
 
 benchmarks:
   # - name: CLEF_p
-  #   val_csv: ./benchmark/perturb/CLEF_p.csv
+  #   val_csv: ../benchmark/perturb/CLEF_p.csv
   #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
+  #   realistic_image_root: ../benchmark
   #   instruction: "<image>\n Give me the SMILES of the molecule. "
   #   sample_num: null
   #   enabled: true
 
   # - name: staker_p
-  #   val_csv: ./benchmark/perturb/staker_p.csv
+  #   val_csv: ../benchmark/perturb/staker_p.csv
   #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
+  #   realistic_image_root: ../benchmark
   #   instruction: "<image>\n Give me the SMILES of the molecule. "
   #   sample_num: null
   #   enabled: true
 
   # - name: UOB_p
-  #   val_csv: ./benchmark/perturb/UOB_p.csv
+  #   val_csv: ../benchmark/perturb/UOB_p.csv
   #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
+  #   realistic_image_root: ../benchmark
   #   instruction: "<image>\n Give me the SMILES of the molecule. "
   #   sample_num: null
   #   enabled: true
 
   # - name: USPTO_p
-  #   val_csv: ./benchmark/perturb/USPTO_p.csv
+  #   val_csv: ../benchmark/perturb/USPTO_p.csv
   #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
+  #   realistic_image_root: ../benchmark
   #   instruction: "<image>\n Give me the SMILES of the molecule. "
   #   sample_num: null
   #   enabled: true
 
   - name: acs
-    val_csv: ./benchmark/real/acs.csv
+    val_csv: ../benchmark/real/acs.csv
     data_mode: realistic
-    realistic_image_root: ./benchmark
+    realistic_image_root: ../benchmark
     instruction: "<image>\n Give me the SMILES of the molecule. "
     sample_num: null
     enabled: true
 
   # - name: CLEF
-  #   val_csv: ./benchmark/real/CLEF.csv
+  #   val_csv: ../benchmark/real/CLEF.csv
   #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
+  #   realistic_image_root: ../benchmark
   #   instruction: "<image>\n Give me the SMILES of the molecule. "
   #   sample_num: null
   #   enabled: true
 
   # - name: staker
-  #   val_csv: ./benchmark/real/staker.csv
+  #   val_csv: ../benchmark/real/staker.csv
   #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
+  #   realistic_image_root: ../benchmark
   #   instruction: "<image>\n Give me the SMILES of the molecule. "
   #   sample_num: null
   #   enabled: true
 
   - name: UOB
-    val_csv: ./benchmark/real/UOB.csv
+    val_csv: ../benchmark/real/UOB.csv
     data_mode: realistic
-    realistic_image_root: ./benchmark
+    realistic_image_root: ../benchmark
     instruction: "<image>\n Give me the SMILES of the molecule. "
     sample_num: null
     enabled: true
 
   # - name: USPTO
-  #   val_csv: ./benchmark/real/USPTO.csv
+  #   val_csv: ../benchmark/real/USPTO.csv
   #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
+  #   realistic_image_root: ../benchmark
   #   instruction: "<image>\n Give me the SMILES of the molecule. "
   #   sample_num: null
   #   enabled: true
 
   # - name: chemdraw
-  #   val_csv: ./benchmark/synthetic/chemdraw.csv
+  #   val_csv: ../benchmark/synthetic/chemdraw.csv
   #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
+  #   realistic_image_root: ../benchmark
   #   instruction: "<image>\n Give me the SMILES of the molecule. "
   #   sample_num: null
   #   enabled: true
 
   # - name: indigo
-  #   val_csv: ./benchmark/synthetic/indigo.csv
+  #   val_csv: ../benchmark/synthetic/indigo.csv
   #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
+  #   realistic_image_root: ../benchmark
   #   instruction: "<image>\n Give me the SMILES of the molecule. "
   #   sample_num: null
   #   enabled: true

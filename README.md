@@ -90,7 +90,7 @@ Check **evaluation.py** and **evaluation_config.yaml**.
 
 ```bash
 python evaluation.py --config evaluation_config.yaml
-python evaluation_gspo.py --config evaluation_gspo_config.yaml
+python gspo/evaluation_gspo.py --config gspo/evaluation_gspo_config.yaml
 ```
 
 ## Progressive SFT
@@ -229,13 +229,15 @@ pip install matplotlib albumentations rdkit SmilesPE pandas addict
 
 ### GSPO RL
 
-GSPO (Group Sequence Policy Optimization) uses tight symmetric clipping (`clip_ratio_low`/`clip_ratio_high`) instead of KL regularization, providing more stable policy updates. The implementation is built on the [verl](https://github.com/volcengine/verl) framework and consists of three files:
+GSPO (Group Sequence Policy Optimization) uses tight symmetric clipping (`clip_ratio_low`/`clip_ratio_high`) instead of KL regularization, providing more stable policy updates. The implementation is built on the [verl](https://github.com/volcengine/verl) framework and is now organized under the `gspo/` directory:
 
 | File | Description |
 |------|-------------|
-| **prepare_verl_data.py** | Reads CSV datasets, resolves image paths, and writes train/val parquet splits in verl-compatible format. |
-| **gspo_rl_verl.py** | Defines the custom reward function (`compute_score`), multimodal dataset (`ChemSeekOCRDataset`), and assembles verl launch command with GSPO-specific Hydra overrides. |
-| **gspo_rl_verl_config.yaml** | All hyperparameters: model path, data sources, GSPO clipping, reward weights, GPU/FSDP/vLLM settings, and logging. |
+| **gspo/prepare_verl_data.py** | Reads CSV datasets, resolves image paths, and writes train/val parquet splits in verl-compatible format. |
+| **gspo/gspo_rl_verl.py** | Defines the custom reward function (`compute_score`), multimodal dataset (`ChemSeekOCRDataset`), and assembles verl launch command with GSPO-specific Hydra overrides. |
+| **gspo/gspo_rl_verl_config.yaml** | All hyperparameters: model path, data sources, GSPO clipping, reward weights, GPU/FSDP/vLLM settings, and logging. |
+| **gspo/evaluation_gspo.py** | Merges verl FSDP checkpoints and evaluates them on configured OCR benchmarks. |
+| **gspo/evaluation_gspo_config.yaml** | Benchmark selection and checkpoint/evaluation settings for GSPO models. |
 
 Key GSPO parameters in the config (`gspo:` section):
 
@@ -250,10 +252,33 @@ The reward function computes five SMILES-based components (validity, tanimoto, c
 
 ```bash
 # Step 1: Prepare parquet data
-python prepare_verl_data.py --config gspo_rl_verl_config.yaml --workers 8
+python gspo/prepare_verl_data.py --config gspo/gspo_rl_verl_config.yaml --workers 8
 
 # Step 2: Launch GSPO training
-python gspo_rl_verl.py --config gspo_rl_verl_config.yaml
+python gspo/gspo_rl_verl.py --config gspo/gspo_rl_verl_config.yaml
+
+# Step 3: Evaluate a GSPO checkpoint
+python gspo/evaluation_gspo.py --config gspo/evaluation_gspo_config.yaml
+```
+
+### ReFT
+
+ReFT (Rejection sampling Fine-Tuning) is organized under the `reft/` directory and provides a two-phase pipeline: best-of-N generation with vLLM followed by SFT on the curated high-reward samples.
+
+| File | Description |
+|------|-------------|
+| **reft/reft.py** | Runs the generation, scoring, filtering, and iterative fine-tuning pipeline. |
+| **reft/reft_config.yaml** | Controls model path, sampling, reward thresholds, vLLM settings, and SFT hyperparameters. |
+
+```bash
+# Run the full ReFT pipeline
+python reft/reft.py --config reft/reft_config.yaml
+
+# Only generate best-of-N candidates
+python reft/reft.py --config reft/reft_config.yaml --phase generate
+
+# Only train a specific iteration
+python reft/reft.py --config reft/reft_config.yaml --phase train --iteration 0
 ```
 
 ## Inference
@@ -261,5 +286,5 @@ python gspo_rl_verl.py --config gspo_rl_verl_config.yaml
 For **transformer** inference, please use conda environment **chemseek-ocr**: 
 
 ```yaml
-python transformer_infer_case.py   --model-path ./weight_progressive_sft/checkpoint-2000   --image-file ./test_img/penicillin.jpg
+python transformer_infer_case.py --model-path ./weight_progressive_sft/checkpoint-2000 --image-file ./test_img/penicillin.jpg
 ```

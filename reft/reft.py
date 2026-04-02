@@ -7,9 +7,9 @@ Pipeline per iteration:
   4. Fine-tune on curated best completions via standard SFT
 
 Usage:
-  python reft.py --config reft_config.yaml
-  python reft.py --config reft_config.yaml --phase generate
-  python reft.py --config reft_config.yaml --phase train --iteration 0
+  python reft/reft.py --config reft/reft_config.yaml
+  python reft/reft.py --config reft/reft_config.yaml --phase generate
+  python reft/reft.py --config reft/reft_config.yaml --phase train --iteration 0
 """
 
 import argparse
@@ -28,6 +28,11 @@ import pandas as pd
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 SMILES_CANDIDATE_COLUMNS = ("SMILES", "smiles", "canonical_smiles")
 DEFAULT_INSTRUCTION = "<image>\n Give me the SMILES of the molecule. "
 _RENDERER_CACHE: Dict[Tuple[str, bool, bool], Any] = {}
@@ -772,9 +777,9 @@ def run_sft(cfg: dict, curated_csv: Path, iteration_dir: Path, iteration: int) -
     """Run SFT on curated data via progressive_sft.py subprocess."""
 
     sft_config_path = _write_sft_config(cfg, curated_csv, iteration_dir, iteration)
-    sft_script = SCRIPT_DIR / "progressive_sft.py"
+    sft_script = PROJECT_ROOT / "progressive_sft.py"
     if not sft_script.is_file():
-        sft_script = SCRIPT_DIR / "full_sft.py"
+        sft_script = PROJECT_ROOT / "full_sft.py"
 
     cmd = [sys.executable, str(sft_script), "--config", str(sft_config_path)]
 

@@ -6,9 +6,9 @@ are merged into a standard HuggingFace model directory using
 ``verl.model_merger``.
 
 Usage:
-  python evaluation_gspo.py --config evaluation_gspo_config.yaml
-  python evaluation_gspo.py --config evaluation_gspo_config.yaml --checkpoint_step 400
-  python evaluation_gspo.py --config evaluation_gspo_config.yaml --checkpoint_path /path/to/global_step_400
+  python gspo/evaluation_gspo.py --config gspo/evaluation_gspo_config.yaml
+  python gspo/evaluation_gspo.py --config gspo/evaluation_gspo_config.yaml --checkpoint_step 400
+  python gspo/evaluation_gspo.py --config gspo/evaluation_gspo_config.yaml --checkpoint_path /path/to/global_step_400
 """
 
 import argparse
@@ -26,6 +26,12 @@ from typing import Any
 import pandas as pd
 import torch
 from transformers import AutoModel, AutoTokenizer
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from DeepSeek_OCR_2 import apply_transformers_compat_shims, resolve_local_model_path
 from calc_accuracy import SmilesEvaluator

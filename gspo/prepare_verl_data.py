@@ -16,19 +16,24 @@ Output columns (verl format):
   - reward_model: JSON-encoded ground truth dict
 
 Usage:
-    python prepare_verl_data.py --config gspo_rl_verl_config.yaml
+    python gspo/prepare_verl_data.py --config gspo/gspo_rl_verl_config.yaml
 """
 
 import argparse
 import json
 import os
 import random
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 _FIND_SMILES_COLUMNS = [
     "SMILES", "smiles", "Smiles", "canonical_smiles",

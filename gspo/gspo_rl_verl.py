@@ -10,11 +10,11 @@ tight symmetric clipping (clip_ratio_low / clip_ratio_high), giving more
 stable updates on MoE architectures.
 
 Usage:
-  # Step 1: Prepare training data (see prepare_verl_data.py)
-  python prepare_verl_data.py --config gspo_rl_verl_config.yaml
+  # Step 1: Prepare training data
+  python gspo/prepare_verl_data.py --config gspo/gspo_rl_verl_config.yaml
 
   # Step 2: Launch GSPO training
-  python gspo_rl_verl.py --config gspo_rl_verl_config.yaml
+  python gspo/gspo_rl_verl.py --config gspo/gspo_rl_verl_config.yaml
 """
 
 import argparse
@@ -29,6 +29,10 @@ from typing import Any, Dict, Optional
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _run_with_live_reward_tqdm(cmd: list[str], env: dict) -> int:
@@ -1024,7 +1028,7 @@ def train(cfg: dict, config_path: str) -> None:
 
     if not train_parquet.is_file():
         print(f"Error: Training data not found at {train_parquet}")
-        print("Run 'python prepare_verl_data.py --config ...' first.")
+        print("Run 'python gspo/prepare_verl_data.py --config gspo/gspo_rl_verl_config.yaml' first.")
         sys.exit(1)
 
     script_path = str(SCRIPT_DIR / "gspo_rl_verl.py")
@@ -1042,7 +1046,7 @@ def train(cfg: dict, config_path: str) -> None:
         vllm_code_dir = _resolve_path(vllm_code_dir, Path(config_path).resolve().parent)
     else:
         fallback_vllm_dir = (
-            SCRIPT_DIR.parent
+            PROJECT_ROOT.parent
             / "DeepSeek-OCR-2"
             / "DeepSeek-OCR2-master"
             / "DeepSeek-OCR2-vllm"
@@ -1075,7 +1079,7 @@ def train(cfg: dict, config_path: str) -> None:
     cmd = _apply_hydra_cli_overrides(cmd, hydra_overrides)
 
     env = os.environ.copy()
-    pythonpath_parts = [str(SCRIPT_DIR)]
+    pythonpath_parts = [str(SCRIPT_DIR), str(PROJECT_ROOT)]
     if vllm_code_dir:
         pythonpath_parts.append(str(vllm_code_dir))
     old_pythonpath = env.get("PYTHONPATH")
