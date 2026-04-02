@@ -57,13 +57,13 @@ data:
 # ---------------------------------------------------------------------------
 # Runtime control kept outside hydra_cli_overrides
 # ---------------------------------------------------------------------------
-output_dir: ./weight_gspo_rl_verl_test4
+output_dir: ./weight_gspo_rl_verl_test6
 allow_tf32: true
 gpu_ids: "2,3,4,5,6,7,8,9"
 # Optional. If unset, use <data.output_dir>/val.parquet when present, else train.parquet.
 val_parquet: null
 # Freeze settings are consumed by external_lib patch logic.
-freeze_layers: [0, 1, 2, 3]
+freeze_layers: [0]
 freeze_modules:
   - model.sam_model
   - model.embed_tokens
@@ -85,8 +85,8 @@ hydra_cli_overrides:
 
   "actor_rollout_ref.actor.optim.lr": 1.0e-6
   "actor_rollout_ref.actor.optim.weight_decay": 0.01
-  "actor_rollout_ref.actor.optim.clip_grad": 0.5
-  "actor_rollout_ref.actor.optim.lr_warmup_steps_ratio": 0.05
+  "actor_rollout_ref.actor.optim.clip_grad": 5.0
+  "actor_rollout_ref.actor.optim.lr_warmup_steps_ratio": 0
   "actor_rollout_ref.actor.policy_loss.loss_mode": gspo
   "actor_rollout_ref.actor.loss_agg_mode": seq-mean-token-mean
   "actor_rollout_ref.actor.clip_ratio_low": 0.1
@@ -154,7 +154,7 @@ hydra_cli_overrides:
   "trainer.critic_warmup": 0
   "trainer.n_gpus_per_node": 8
   "trainer.nnodes": 1
-  "trainer.save_freq": 200
+  "trainer.save_freq": 100
   "trainer.test_freq": -1
   "trainer.total_epochs": 1
   "trainer.val_before_train": false
@@ -164,5 +164,5 @@ hydra_cli_overrides:
 wandb:
   enabled: true
   project: ChemSeek-OCR
-  run_name: gspo-verl-8gpu-test4
+  run_name: gspo-verl-8gpu-test6
   api_key: null

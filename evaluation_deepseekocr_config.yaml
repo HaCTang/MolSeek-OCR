@@ -1,7 +1,7 @@
 pretrained_weight_path: ../DeepSeek-OCR-2/hf_cache/models--deepseek-ai--DeepSeek-OCR-2/snapshots/aaa02f3811945a91062062994c5c4a3f4c0af2b0
 weight_root: ./weight_lora_sft
 # mode: lora / full
-full_or_lora: lora
+full_or_lora: full
 
 # Choose one of:
 # 1) checkpoint_path (highest priority), e.g. ./weight/checkpoint-1500
@@ -9,7 +9,7 @@ full_or_lora: lora
 # 3) checkpoint_name, e.g. checkpoint-1500
 # 4) if all null, auto use latest checkpoint-* under weight_root
 checkpoint_path: null
-checkpoint_step: 3000
+checkpoint_step: null
 checkpoint_name: null
 
 # output directory for evaluation artifacts/metrics
@@ -23,7 +23,6 @@ num_workers: 32
 tanimoto: false
 
 # --- Backend: "transformers" (default, sequential) or "vllm" (batch, faster) ---
-# backend: transformers
 backend: vllm
 
 # --- vLLM-specific options (only used when backend=vllm) ---
@@ -59,13 +58,13 @@ benchmarks:
   #   sample_num: null
   #   enabled: true
 
-  - name: staker_p
-    val_csv: ./benchmark/perturb/staker_p.csv
-    data_mode: realistic
-    realistic_image_root: ./benchmark
-    instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: null
-    enabled: true
+  # - name: staker_p
+  #   val_csv: ./benchmark/perturb/staker_p.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
 
   - name: UOB_p
     val_csv: ./benchmark/perturb/UOB_p.csv
@@ -99,13 +98,13 @@ benchmarks:
   #   sample_num: null
   #   enabled: true
 
-  # - name: staker
-  #   val_csv: ./benchmark/real/staker.csv
-  #   data_mode: realistic
-  #   realistic_image_root: ./benchmark
-  #   instruction: "<image>\n Give me the SMILES of the molecule. "
-  #   sample_num: null
-  #   enabled: true
+  - name: staker
+    val_csv: ./benchmark/real/staker.csv
+    data_mode: realistic
+    realistic_image_root: ./benchmark
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: null
+    enabled: true
 
   # - name: UOB
   #   val_csv: ./benchmark/real/UOB.csv
@@ -123,13 +122,13 @@ benchmarks:
   #   sample_num: null
   #   enabled: true
 
-  - name: chemdraw
-    val_csv: ./benchmark/synthetic/chemdraw.csv
-    data_mode: realistic
-    realistic_image_root: ./benchmark
-    instruction: "<image>\n Give me the SMILES of the molecule. "
-    sample_num: null
-    enabled: true
+  # - name: chemdraw
+  #   val_csv: ./benchmark/synthetic/chemdraw.csv
+  #   data_mode: realistic
+  #   realistic_image_root: ./benchmark
+  #   instruction: "<image>\n Give me the SMILES of the molecule. "
+  #   sample_num: null
+  #   enabled: true
 
   - name: indigo
     val_csv: ./benchmark/synthetic/indigo.csv

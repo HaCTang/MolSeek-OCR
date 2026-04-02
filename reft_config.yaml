@@ -1,0 +1,143 @@
+# ===========================================================================
+# ReFT (Rejection sampling Fine-Tuning) Configuration
+# For DeepSeek-OCR-2 SMILES OCR
+#
+# Pipeline per iteration:
+#   1. Generate N completions per training sample with vLLM
+#   2. Score each with SMILES reward function
+#   3. Keep best-of-N above min_reward threshold
+#   4. Fine-tune on curated best completions via standard SFT
+#
+# Usage:
+#   python reft.py --config reft_config.yaml
+#   python reft.py --config reft_config.yaml --phase generate
+#   python reft.py --config reft_config.yaml --phase train --iteration 0
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Model (starting checkpoint)
+# ---------------------------------------------------------------------------
+pretrained_weight_path: ./weight_progressive_sft/checkpoint-2000
+
+# ---------------------------------------------------------------------------
+# Training data (same format as progressive_sft_config.yaml)
+# ---------------------------------------------------------------------------
+train_sets:
+  - train_csv: ./training_data/pubchem/train_1m.csv
+    data_mode: dynamic
+    pre_rendered_image_dir: null
+    realistic_image_root: null
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    style: molscribe_default
+    mol_augment: true
+    include_condensed: false
+    sample_num: 6400
+
+  - train_csv: ./training_data/pubchem/train_1m.csv
+    data_mode: dynamic
+    pre_rendered_image_dir: null
+    realistic_image_root: null
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    style: chemdraw_like
+    mol_augment: false
+    include_condensed: false
+    sample_num: 6400
+
+  - train_csv: ./training_data/uspto_mol/train_680k.csv
+    data_mode: realistic
+    realistic_image_root: ./training_data
+    instruction: "<image>\n Give me the SMILES of the molecule. "
+    sample_num: 3000
+
+instruction: "<image>\n Give me the SMILES of the molecule. "
+
+# ---------------------------------------------------------------------------
+# Rendering (dynamic data preparation)
+# ---------------------------------------------------------------------------
+render:
+  num_workers: 16
+  chunksize: 64
+
+# ---------------------------------------------------------------------------
+# Generation (Phase 1: vLLM rollout)
+# ---------------------------------------------------------------------------
+generation:
+  n: 8
+  temperature: 0.3
+  top_p: 0.95
+  max_tokens: 256
+  chunk_size: 500
+
+# ---------------------------------------------------------------------------
+# Reward scoring + filtering
+# ---------------------------------------------------------------------------
+reward:
+  weights:
+    validity: 0.0
+    tanimoto: 5.0
+    canon_smiles: 5.0
+    graph: 2.0
+    chiral: 1.0
+    repetition_penalty: 2.0
+  chiral_no_annotation_reward: 0.0
+  min_reward: 0.5
+
+# ---------------------------------------------------------------------------
+# vLLM engine (for generation phase)
+# ---------------------------------------------------------------------------
+vllm:
+  code_dir: ../DeepSeek-OCR-2/DeepSeek-OCR2-master/DeepSeek-OCR2-vllm
+  gpu_memory_utilization: 0.8
+  max_model_len: 8192
+  tensor_parallel_size: 1
+  gpu_ids: [2,3,4,5,6,7,8,9]
+
+# ---------------------------------------------------------------------------
+# SFT training (Phase 2)
+# ---------------------------------------------------------------------------
+sft:
+  batch_size: 4
+  grad_accum: 8
+  learning_rate: 0.000005
+  vision_learning_rate: 0.000002
+  language_learning_rate: 0.00001
+  weight_decay: 0.01
+  warmup_steps: 100
+  max_steps: 0
+  epochs: 1.0
+  save_steps: 200
+  optim: adamw_torch_fused
+  enable_gradient_checkpointing: true
+  dataloader_num_workers: 8
+  train_on_responses_only: true
+  use_accelerate: true
+  accelerate_num_processes: 8
+  accelerate_gpu_ids: "2,3,4,5,6,7,8,9"
+
+# ---------------------------------------------------------------------------
+# Freeze settings (applied during SFT phase)
+# ---------------------------------------------------------------------------
+freeze_layers: [0]
+freeze_modules:
+  - model.sam_model
+  - model.embed_tokens
+
+# ---------------------------------------------------------------------------
+# Iteration control
+# ---------------------------------------------------------------------------
+num_iterations: 1
+output_dir: ./weight_reft
+merged_model_dir: ./merged_reft_models
+seed: 3407
+
+image_size: 768
+base_size: 1024
+crop_mode: true
+
+# ---------------------------------------------------------------------------
+# W&B
+# ---------------------------------------------------------------------------
+wandb: false
+wandb_project: ChemSeek-OCR
+wandb_run_name: reft
+wandb_api_key: null

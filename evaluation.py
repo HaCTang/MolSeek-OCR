@@ -61,6 +61,7 @@ class EvalConfig:
     vllm_gpu_memory_utilization: float = 0.85
     vllm_max_model_len: int = 8192
     vllm_tensor_parallel_size: int = 1
+    vllm_max_batch_samples: int = 512
     merged_model_dir: str | None = None
     # Multi-GPU data parallelism (each GPU runs an independent model instance)
     num_gpus: int = 1
@@ -134,6 +135,7 @@ def load_eval_config(config_path: str) -> EvalConfig:
     raw["vllm_gpu_memory_utilization"] = float(raw.get("vllm_gpu_memory_utilization", 0.85))
     raw["vllm_max_model_len"] = int(raw.get("vllm_max_model_len", 8192))
     raw["vllm_tensor_parallel_size"] = int(raw.get("vllm_tensor_parallel_size", 1))
+    raw["vllm_max_batch_samples"] = int(raw.get("vllm_max_batch_samples", 512))
     raw["num_gpus"] = int(raw.get("num_gpus", 1))
     gpu_ids_raw = raw.get("gpu_ids", None)
     if gpu_ids_raw in (None, []):
@@ -182,7 +184,14 @@ def load_eval_config(config_path: str) -> EvalConfig:
 def validate_eval_config(cfg: EvalConfig) -> None:
     if not os.path.isdir(cfg.pretrained_weight_path):
         raise ValueError(f"pretrained_weight_path not found: {cfg.pretrained_weight_path}")
-    if not os.path.isdir(cfg.weight_root):
+    # weight_root is required when LoRA checkpoints are needed, or when
+    # checkpoint_step/checkpoint_name requires searching under weight_root.
+    need_weight_root = (
+        cfg.full_or_lora == "lora"
+        or cfg.checkpoint_step is not None
+        or bool(cfg.checkpoint_name)
+    )
+    if need_weight_root and not os.path.isdir(cfg.weight_root):
         raise ValueError(f"weight_root not found: {cfg.weight_root}")
     if cfg.num_workers <= 0:
         raise ValueError("num_workers must be > 0")
@@ -206,6 +215,8 @@ def validate_eval_config(cfg: EvalConfig) -> None:
             raise ValueError(f"vllm_code_dir is required and must exist for vllm backend: {cfg.vllm_code_dir}")
         if not cfg.merged_model_dir:
             raise ValueError("merged_model_dir is required for vllm backend")
+        if cfg.vllm_max_batch_samples <= 0:
+            raise ValueError("vllm_max_batch_samples must be > 0")
 
     for i, bench in enumerate(cfg.benchmarks):
         if bench.data_mode not in ("realistic", "pre_rendered"):
@@ -252,6 +263,18 @@ def _find_latest_checkpoint(weight_root: str) -> str | None:
 
 
 def resolve_checkpoint_path(cfg: EvalConfig, cli_checkpoint_path: str | None, cli_step: int | None) -> str:
+    # In full mode, allow direct evaluation from pretrained_weight_path when
+    # no checkpoint selector is provided.
+    no_checkpoint_selector = (
+        cli_checkpoint_path is None
+        and cli_step is None
+        and cfg.checkpoint_path is None
+        and cfg.checkpoint_step is None
+        and not cfg.checkpoint_name
+    )
+    if cfg.full_or_lora == "full" and no_checkpoint_selector:
+        return str(Path(cfg.pretrained_weight_path).resolve())
+
     if cli_checkpoint_path:
         path = Path(cli_checkpoint_path).resolve()
         if not path.is_dir():
@@ -484,50 +507,70 @@ def run_benchmark_vllm(
     df = pd.read_csv(bench.val_csv)
     df = _apply_sample_num(df, bench.sample_num)
     smiles_col = _find_smiles_column(df)
+    total_samples = len(df)
 
     processor = DeepseekOCR2Processor()
-    batch_inputs: list[dict | None] = []
     image_ids: list = []
-
-    for idx, row in df.iterrows():
-        image_id = row.get("image_id", idx)
-        image_ids.append(image_id)
-        try:
-            image_path = _resolve_image_path(row, bench)
-            image = Image.open(image_path).convert("RGB")
-            tokenized = processor.tokenize_with_images(
-                images=[image], bos=True, eos=True, cropping=cfg.crop_mode
-            )
-            batch_inputs.append({
-                "prompt": bench.instruction,
-                "multi_modal_data": {"image": tokenized},
-            })
-        except Exception as exc:
-            print(f"[{bench.name}] sample={idx} preprocess failed: {exc}")
-            batch_inputs.append(None)
-
-    valid_inputs = [inp for inp in batch_inputs if inp is not None]
-    print(f"[{bench.name}] Running vLLM inference on {len(valid_inputs)}/{len(df)} samples...")
+    predictions: list[str] = []
 
     sampling_params = SamplingParams(
         temperature=0.0,
         max_tokens=512,
         skip_special_tokens=False,
     )
-    outputs = llm.generate(valid_inputs, sampling_params)
 
     stop_str = "\u003c\uff5cend\u2581of\u2581sentence\uff5c\u003e"
-    predictions: list[str] = []
-    output_idx = 0
-    for inp in batch_inputs:
-        if inp is not None:
-            text = outputs[output_idx].outputs[0].text.strip()
-            if text.endswith(stop_str):
-                text = text[: -len(stop_str)].strip()
-            predictions.append(text)
-            output_idx += 1
+    chunk_size = cfg.vllm_max_batch_samples
+    total_valid = 0
+    print(
+        f"[{bench.name}] Running vLLM inference on {total_samples} samples "
+        f"(chunk_size={chunk_size})..."
+    )
+
+    for chunk_start in range(0, total_samples, chunk_size):
+        chunk_end = min(chunk_start + chunk_size, total_samples)
+        chunk_df = df.iloc[chunk_start:chunk_end]
+        chunk_inputs: list[dict | None] = []
+
+        for row_idx, row in chunk_df.iterrows():
+            image_id = row.get("image_id", row_idx)
+            image_ids.append(image_id)
+            try:
+                image_path = _resolve_image_path(row, bench)
+                image = Image.open(image_path).convert("RGB")
+                tokenized = processor.tokenize_with_images(
+                    images=[image], bos=True, eos=True, cropping=cfg.crop_mode
+                )
+                chunk_inputs.append({
+                    "prompt": bench.instruction,
+                    "multi_modal_data": {"image": tokenized},
+                })
+            except Exception as exc:
+                print(f"[{bench.name}] sample={row_idx} preprocess failed: {exc}")
+                chunk_inputs.append(None)
+
+        valid_inputs = [inp for inp in chunk_inputs if inp is not None]
+        total_valid += len(valid_inputs)
+        if valid_inputs:
+            outputs = llm.generate(valid_inputs, sampling_params)
         else:
-            predictions.append("")
+            outputs = []
+
+        output_idx = 0
+        for inp in chunk_inputs:
+            if inp is not None:
+                text = outputs[output_idx].outputs[0].text.strip()
+                if text.endswith(stop_str):
+                    text = text[: -len(stop_str)].strip()
+                predictions.append(text)
+                output_idx += 1
+            else:
+                predictions.append("")
+
+        print(
+            f"[{bench.name}] processed {chunk_end}/{total_samples} "
+            f"(valid={total_valid})"
+        )
 
     gold_smiles = df[smiles_col].astype(str).tolist()
     return _save_benchmark_results(cfg, checkpoint_path, bench, image_ids, gold_smiles, predictions)
