@@ -288,3 +288,17 @@ For **transformer** inference, please use conda environment **chemseek-ocr**:
 ```yaml
 python transformer_infer_case.py --model-path ./weight_progressive_sft/checkpoint-2000 --image-file ./test_img/penicillin.jpg
 ```
+
+## Citation
+
+```
+@misc{tang2026finetuningdeepseekocr2molecularstructure,
+      title={Fine-tuning DeepSeek-OCR-2 for Molecular Structure Recognition}, 
+      author={Haocheng Tang and Xingyu Dang and Junmei Wang},
+      year={2026},
+      eprint={2604.03476},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2604.03476}, 
+}
+```
