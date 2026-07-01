@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import full_sft as full_core
+import misc.full_sft as full_core
 from transformers import AutoConfig
 from transformers.modeling_utils import load_sharded_checkpoint
 
