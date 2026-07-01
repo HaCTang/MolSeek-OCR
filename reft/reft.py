@@ -779,7 +779,7 @@ def run_sft(cfg: dict, curated_csv: Path, iteration_dir: Path, iteration: int) -
     sft_config_path = _write_sft_config(cfg, curated_csv, iteration_dir, iteration)
     sft_script = PROJECT_ROOT / "progressive_sft.py"
     if not sft_script.is_file():
-        sft_script = PROJECT_ROOT / "full_sft.py"
+        sft_script = PROJECT_ROOT / "misc" / "full_sft.py"
 
     cmd = [sys.executable, str(sft_script), "--config", str(sft_config_path)]
 
