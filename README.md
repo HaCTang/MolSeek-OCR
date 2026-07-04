@@ -75,6 +75,13 @@ You can choose to use **dataset.py** to pre-render pictures in **pubchem**.
 
 ## Evaluation Checkpoint
 
+The released weights corresponding to the reported results are hosted on Hugging Face Hub under [Haocheng1/MolSeek-OCR](https://huggingface.co/Haocheng1/MolSeek-OCR):
+
+- [LoRA weight](https://huggingface.co/Haocheng1/MolSeek-OCR/tree/main/LoRA-weight): the LoRA SFT checkpoint after merging into the base DeepSeek-OCR-2 model.
+- [Progressive Full SFT weight](https://huggingface.co/Haocheng1/MolSeek-OCR/tree/main/Progressive-Full-SFT-weight): the progressive full-parameter SFT checkpoint initialized from the merged LoRA model.
+
+These fine-tuned weights follow the license and availability conditions of the base DeepSeek-OCR-2 model.
+
 ### Download Benchmarks
 
 Download the following benchmarks and unzip them into the folder **benchmark**.

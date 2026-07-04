@@ -25,6 +25,8 @@ outputs/
 merged_full_sft_800K_1EPOCH_model/
 gspo_evaluation_outputs/
 reft_sft_evaluation_outputs/
+rebuttal/
+figures/
 gspo/_chemseek_gspo_freeze.py
 github.txt
 *.zip
