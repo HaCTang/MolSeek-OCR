@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import gc
 import json
 import math
 import multiprocessing
@@ -76,6 +77,7 @@ class GspoEvalConfig:
     vllm_gpu_memory_utilization: float = 0.85
     vllm_max_model_len: int = 8192
     vllm_tensor_parallel_size: int = 1
+    vllm_max_batch_samples: int = 512
     # Multi-GPU data parallelism
     num_gpus: int = 1
     gpu_ids: list[int] | None = None
@@ -149,6 +151,7 @@ def load_eval_config(config_path: str) -> GspoEvalConfig:
     raw["vllm_gpu_memory_utilization"] = float(raw.get("vllm_gpu_memory_utilization", 0.85))
     raw["vllm_max_model_len"] = int(raw.get("vllm_max_model_len", 8192))
     raw["vllm_tensor_parallel_size"] = int(raw.get("vllm_tensor_parallel_size", 1))
+    raw["vllm_max_batch_samples"] = int(raw.get("vllm_max_batch_samples", 512))
     raw["num_gpus"] = int(raw.get("num_gpus", 1))
     gpu_ids_raw = raw.get("gpu_ids", None)
     if gpu_ids_raw in (None, []):
@@ -212,6 +215,8 @@ def validate_eval_config(cfg: GspoEvalConfig) -> None:
     if cfg.backend == "vllm":
         if not cfg.vllm_code_dir or not os.path.isdir(cfg.vllm_code_dir):
             raise ValueError(f"vllm_code_dir is required and must exist for vllm backend: {cfg.vllm_code_dir}")
+        if cfg.vllm_max_batch_samples <= 0:
+            raise ValueError("vllm_max_batch_samples must be > 0")
 
     for i, bench in enumerate(cfg.benchmarks):
         if bench.data_mode not in ("realistic", "pre_rendered"):
@@ -600,53 +605,102 @@ def run_benchmark_vllm(
     df = pd.read_csv(bench.val_csv)
     df = _apply_sample_num(df, bench.sample_num)
     smiles_col = _find_smiles_column(df)
+    total_samples = len(df)
 
     processor = DeepseekOCR2Processor()
-    batch_inputs: list[dict | None] = []
     image_ids: list = []
+    predictions: list[str] = []
+    gold_smiles = df[smiles_col].astype(str).tolist()
 
-    for idx, row in df.iterrows():
-        image_id = row.get("image_id", idx)
-        image_ids.append(image_id)
-        try:
-            image_path = _resolve_image_path(row, bench)
-            image = Image.open(image_path).convert("RGB")
-            tokenized = processor.tokenize_with_images(
-                images=[image], bos=True, eos=True, cropping=cfg.crop_mode
-            )
-            batch_inputs.append({
-                "prompt": bench.instruction,
-                "multi_modal_data": {"image": tokenized},
-            })
-        except Exception as exc:
-            print(f"[{bench.name}] sample={idx} preprocess failed: {exc}")
-            batch_inputs.append(None)
-
-    valid_inputs = [inp for inp in batch_inputs if inp is not None]
-    print(f"[{bench.name}] Running vLLM inference on {len(valid_inputs)}/{len(df)} samples...")
+    benchmark_output_dir = Path(cfg.output_dir) / Path(checkpoint_path).name / bench.name
+    benchmark_output_dir.mkdir(parents=True, exist_ok=True)
+    predictions_csv_path = benchmark_output_dir / "predictions.csv"
 
     sampling_params = SamplingParams(
         temperature=0.0,
         max_tokens=512,
         skip_special_tokens=False,
     )
-    outputs = llm.generate(valid_inputs, sampling_params)
-
     stop_str = "\u003c\uff5cend\u2581of\u2581sentence\uff5c\u003e"
-    predictions: list[str] = []
-    output_idx = 0
-    for inp in batch_inputs:
-        if inp is not None:
-            text = outputs[output_idx].outputs[0].text.strip()
-            if text.endswith(stop_str):
-                text = text[: -len(stop_str)].strip()
-            predictions.append(text)
-            output_idx += 1
-        else:
-            predictions.append("")
+    chunk_size = cfg.vllm_max_batch_samples
+    total_valid = 0
+    wrote_header = False
+    print(
+        f"[{bench.name}] Running vLLM inference on {total_samples} samples "
+        f"(chunk_size={chunk_size})..."
+    )
 
-    gold_smiles = df[smiles_col].astype(str).tolist()
-    return _save_benchmark_results(cfg, checkpoint_path, bench, image_ids, gold_smiles, predictions)
+    for chunk_start in range(0, total_samples, chunk_size):
+        chunk_end = min(chunk_start + chunk_size, total_samples)
+        chunk_df = df.iloc[chunk_start:chunk_end]
+        chunk_inputs: list[dict | None] = []
+        chunk_image_ids: list[Any] = []
+        chunk_gold_smiles: list[str] = []
+
+        for row_idx, row in chunk_df.iterrows():
+            image_id = row.get("image_id", row_idx)
+            chunk_image_ids.append(image_id)
+            image_ids.append(image_id)
+            chunk_gold_smiles.append(str(row[smiles_col]))
+            try:
+                image_path = _resolve_image_path(row, bench)
+                with Image.open(image_path) as image_handle:
+                    image = image_handle.convert("RGB")
+                    tokenized = processor.tokenize_with_images(
+                        images=[image], bos=True, eos=True, cropping=cfg.crop_mode
+                    )
+                    image.close()
+                chunk_inputs.append({
+                    "prompt": bench.instruction,
+                    "multi_modal_data": {"image": tokenized},
+                })
+            except Exception as exc:
+                print(f"[{bench.name}] sample={row_idx} preprocess failed: {exc}")
+                chunk_inputs.append(None)
+
+        valid_inputs = [inp for inp in chunk_inputs if inp is not None]
+        total_valid += len(valid_inputs)
+        outputs = llm.generate(valid_inputs, sampling_params) if valid_inputs else []
+
+        chunk_predictions: list[str] = []
+        output_idx = 0
+        for inp in chunk_inputs:
+            if inp is not None:
+                text = outputs[output_idx].outputs[0].text.strip()
+                if text.endswith(stop_str):
+                    text = text[: -len(stop_str)].strip()
+                chunk_predictions.append(text)
+                output_idx += 1
+            else:
+                chunk_predictions.append("")
+
+        predictions.extend(chunk_predictions)
+        pd.DataFrame(
+            {
+                "image_id": chunk_image_ids,
+                "gold_smiles": chunk_gold_smiles,
+                "pred_smiles": chunk_predictions,
+            }
+        ).to_csv(predictions_csv_path, mode="a", index=False, header=not wrote_header)
+        wrote_header = True
+
+        print(
+            f"[{bench.name}] processed {chunk_end}/{total_samples} "
+            f"(valid={total_valid})"
+        )
+
+        del chunk_inputs, valid_inputs, outputs, chunk_predictions, chunk_image_ids, chunk_gold_smiles
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    evaluator = SmilesEvaluator(gold_smiles, num_workers=cfg.num_workers, tanimoto=cfg.tanimoto)
+    scores = evaluator.evaluate(predictions)
+    scores["accuracy"] = scores["canon_smiles"]
+    scores["num_samples"] = len(gold_smiles)
+    with open(benchmark_output_dir / "metrics.json", "w", encoding="utf-8") as f:
+        json.dump(scores, f, ensure_ascii=False, indent=2)
+    return scores
 
 
 # ---------------------------------------------------------------------------
